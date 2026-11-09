@@ -139,7 +139,7 @@ Gradle| Gradle Wrapper پروژه
 
 دریافت پروژه
 
-git clone https://github.com/YOUR_USERNAME/Arya_messenger.git
+git clone https://github.com/aversateam/Arya_messenger.git
 cd Arya_messenger
 
 اجرای تست‌ها
