@@ -1,0 +1,20 @@
+Emoji assets
+============
+
+emoji/<category>/<codepoints>.png
+---------------------------------
+3,606 emoji images (64x64 PNG) extracted from Telegram's emoji.pack for Android
+(EPK3 pack, https://github.com/DrKLO/Telegram). They are grouped into Telegram's eight
+categories: smileys, nature, food, activity, travel, objects, symbols, flags.
+
+The artwork originates from Apple's emoji set as shipped by Telegram. Telegram's source
+is GPLv2+; the emoji artwork itself is not covered by a permissive license. Using these
+images in this project means the project must comply with those terms.
+
+Changing an emoji: simply replace the PNG with any 64x64 image (same file name) and
+rebuild. INDEX.csv lists folder/file/keywords so you can locate one quickly.
+
+emoji_names.json
+----------------
+Emoji name/keyword index (character -> searchable keywords) used by the picker search,
+generated from the iamcal/emoji-data project (MIT-licensed data).

@@ -1,0 +1,8 @@
+# Taste
+- When working on an existing project, prefers incremental development on the existing source — do not rewrite the project from scratch, and preserve the current features and app identity. Confidence: 0.75
+- When the user describes a development task, expects the agent to carry it out directly (inspect the code, implement, build, test) rather than just producing a prompt or plan for it. Confidence: 0.65
+- Theming/color work must be audited precisely across ALL screens before it is called done: no hardcoded colors, root/window background painted with the theme background, and text colors adapted in both light and dark modes — partial theming counts as broken (user caught the home screen not adapting to dark mode after it was reported complete). Confidence: 0.85
+- Uses Telegram's open-source repo (DrKLO/Telegram) as the reference implementation for messenger features (e.g. the emoji system/picker) and expects faithful porting — its assets/images and data structures, not just the layout — with the previous implementation's assets replaced. Confidence: 0.85
+- Communicates in Persian (Farsi); write task specs, corrections, and replies in Persian. Confidence: 0.85
+- Expects honest status reporting: never present untested features as complete, and never claim capabilities (e.g. end-to-end encryption) that were not actually implemented. Confidence: 0.7
+- Prefers assets/data kept as individually viewable and easily editable files (e.g. one plain PNG per item) rather than opaque packed/binary containers, so changes can be made by simple copy-paste — favors editability over compactness/size. Confidence: 0.8
