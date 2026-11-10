@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -13,11 +14,19 @@ plugins {
 //   keyAlias=arya
 //   keyPassword=...
 // Without it, release builds stay unsigned instead of failing the build.
+//
+// A PKCS12 keystore (the JDK 9+ default) requires the key password to equal the store password;
+// keytool ignores -keypass in that case. So keyPassword falls back to storePassword when omitted
+// instead of failing with "Given final block not properly padded".
 val keystoreProperties = Properties().apply {
     val file = rootProject.file("keystore.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
 val hasReleaseSigning = keystoreProperties.size > 0
+// These names must not collide with SigningConfig's own properties: inside the signingConfigs
+// block, an unqualified `storePassword` binds to the receiver, not to a local value.
+val releaseStorePassword = keystoreProperties.getProperty("storePassword")
+val releaseKeyPassword = keystoreProperties.getProperty("keyPassword") ?: releaseStorePassword
 
 android {
     namespace = "dev.arya.messenger"
@@ -36,9 +45,9 @@ android {
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
-                storePassword = keystoreProperties.getProperty("storePassword")
+                storePassword = releaseStorePassword
                 keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -56,7 +65,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     lint {
         // Scanners and store submission treat a broken export as a real defect.
@@ -67,6 +75,12 @@ android {
 
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
