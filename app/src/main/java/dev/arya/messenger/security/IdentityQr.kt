@@ -13,6 +13,8 @@ import java.util.Base64
  * handshake, never by the address.
  */
 object IdentityQr {
+    private const val LINK_PREFIX = "arya://v2/"
+
     data class Card(
         val displayName: String,
         val publicKey: String,
@@ -46,6 +48,36 @@ object IdentityQr {
                 via?.let { put("relay", it) }
             }
             .toString()
+    }
+
+    /**
+     * A single shareable invitation string.
+     *
+     * The QR code, the copied link, and a pasted message are all the same payload, so there is
+     * exactly one way to connect: exchange an invitation.
+     */
+    fun link(
+        displayName: String,
+        publicKey: String,
+        endpoint: String? = null,
+        relay: String? = null
+    ): String {
+        val json = encode(displayName, publicKey, endpoint, relay)
+        val encoded = Base64.getUrlEncoder().encodeToString(json.toByteArray(Charsets.UTF_8))
+        return LINK_PREFIX + encoded
+    }
+
+    /** Accepts a QR payload, an invitation link, or a bare link body. */
+    fun decodeInvite(raw: String): Card {
+        val text = raw.trim()
+        if (text.isEmpty()) throw IllegalArgumentException("دعوت خالی است")
+        val json = if (text.startsWith(LINK_PREFIX)) {
+            val encoded = text.removePrefix(LINK_PREFIX)
+            String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8)
+        } else {
+            text
+        }
+        return decode(json)
     }
 
     fun decode(raw: String): Card {

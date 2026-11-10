@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,12 +51,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
+import dev.arya.messenger.AryaApplication
 import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.ConversationEntity
 import dev.arya.messenger.data.ContactEntity
@@ -64,7 +68,6 @@ import dev.arya.messenger.data.NetworkConfig
 import dev.arya.messenger.security.IdentityQr
 import dev.arya.messenger.ui.Routes
 import dev.arya.messenger.ui.components.Avatar
-import dev.arya.messenger.ui.components.NameDialog
 import dev.arya.messenger.ui.components.rememberQrBitmap
 import dev.arya.messenger.ui.repoScope
 import dev.arya.messenger.ui.theme.AryaPrefs
@@ -80,7 +83,6 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
     val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
     val themeMode by AryaPrefs.theme.collectAsState(initial = AryaPrefs.themeMode(context))
     var search by remember { mutableStateOf("") }
-    var showNew by remember { mutableStateOf(false) }
     var showGroup by remember { mutableStateOf(false) }
     var showIdentity by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
@@ -107,18 +109,14 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
                 Box(Modifier.size(9.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("حالت محلی + آزمایش LAN", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("ارتباط اینترنتی", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Text(
-                        "اتصال امن آزمایشی روی شبکه مشترک؛ هر دو دستگاه باید هویت یکدیگر را تأیید کرده باشند",
+                        "بدون سرور مرکزی؛ مسیر مستقیم یا رله. هر دو دستگاه باید هویت یکدیگر را تأیید کرده باشند",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
                     )
                 }
             }
-        }
-        Spacer(Modifier.height(10.dp))
-        OutlinedButton(onClick = { navController.navigate(Routes.LAN) }, modifier = Modifier.fillMaxWidth()) {
-            Text("آزمایش ارتباط واقعی در شبکه محلی")
         }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
@@ -134,7 +132,7 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("گفتگوها", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             IconButton(onClick = { showGroup = true }) { Icon(Icons.Default.GroupAdd, contentDescription = "گروه جدید") }
-            IconButton(onClick = { showNew = true }) { Icon(Icons.Default.Add, contentDescription = "گفتگوی جدید") }
+            IconButton(onClick = { navController.navigate(Routes.CONTACTS) }) { Icon(Icons.Default.Add, contentDescription = "دعوت مخاطب") }
         }
         val filtered = conversations.filter { it.title.contains(search, true) }
         if (filtered.isEmpty()) {
@@ -145,9 +143,9 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
             ) {
                 Text("هنوز گفتگویی نداری", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
-                Text("یک گفتگوی محلی یا گروه آزمایشی بساز.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("برای شروع، دعوت مخاطب را با QR یا لینک اضافه کن.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 Spacer(Modifier.height(18.dp))
-                OutlinedButton(onClick = { showNew = true }) { Text("شروع گفتگو") }
+                OutlinedButton(onClick = { navController.navigate(Routes.CONTACTS) }) { Text("افزودن مخاطب") }
             }
         } else {
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -159,9 +157,6 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
         }
     }
 
-    if (showNew) NameDialog("گفتگوی جدید", "نام مخاطب یا گفتگو", onDismiss = { showNew = false }) { title ->
-        repoScope { navController.navigate(Routes.conversation(repo.createConversation(title))); showNew = false }
-    }
     if (showGroup) GroupCreateDialog(
         contacts = contacts.filter { it.verified && !it.publicKey.isNullOrBlank() },
         onDismiss = { showGroup = false },
@@ -174,32 +169,69 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkCon
         }
     )
     if (showIdentity) {
-        val qrPayload = remember(identity.publicKey, identity.displayName, config.publicEndpoint) {
-            IdentityQr.encode(
-                identity.displayName,
-                identity.publicKey,
-                endpoint = config.publicEndpoint.ifBlank { null },
-                relay = config.relayEndpoints.firstOrNull()
-            )
-        }
-        val bitmap = rememberQrBitmap(qrPayload)
+        val endpointDraft = remember { mutableStateOf(config.publicEndpoint) }
+        var nodeMode by remember { mutableStateOf(config.nodeModeEnabled) }
+        // When node mode is on, this device is its own relay, so the invite advertises the same
+        // address it already publishes for direct connections.
+        val ownRelay = if (!nodeMode) null else endpointDraft.value.trim().ifBlank { null }
+        val invite = IdentityQr.link(
+            identity.displayName,
+            identity.publicKey,
+            endpoint = endpointDraft.value.ifBlank { null },
+            relay = ownRelay ?: config.relayEndpoints.firstOrNull()
+        )
+        val bitmap = rememberQrBitmap(invite)
+        val clipboard = LocalClipboardManager.current
         AlertDialog(
             onDismissRequest = { showIdentity = false },
-            title = { Text("هویت عمومی") },
+            title = { Text("دعوت من") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${identity.displayName} • کلید عمومی", fontWeight = FontWeight.SemiBold)
+                    Text("${identity.displayName} • دعوت آریا", fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(12.dp))
                     if (bitmap != null) {
                         androidx.compose.foundation.Image(
                             bitmap.asImageBitmap(),
-                            contentDescription = "QR هویت",
+                            contentDescription = "QR دعوت",
                             modifier = Modifier.size(180.dp)
                         )
                     }
                     Text("اثر انگشت کلید عمومی", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                     Text(IdentityQr.fingerprint(identity.publicKey), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("این QR کارت هویت عمومی توست؛ برای اعتماد، اثر انگشت را از راهی مستقل مقایسه کنید.", fontSize = 11.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = endpointDraft.value,
+                        onValueChange = {
+                            endpointDraft.value = it
+                            config.publicEndpoint = it.trim()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("آدرس قابل دسترس این دستگاه (اختیاری)") },
+                        singleLine = true
+                    )
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("اجازه بده دیگران از من رد شوند", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "این دستگاه روی همان آدرس و پورت بالا نود رله هم می‌شود. محتوا رمزنگاری‌شده است و هیچ پیامی ذخیره نمی‌شود. بدون آدرس معتبر بالا، این گزینه به کار کسی نمی‌آید.",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = nodeMode, onCheckedChange = {
+                            nodeMode = it
+                            config.nodeModeEnabled = it
+                            (context.applicationContext as? AryaApplication)?.applyNetworkConfig()
+                        })
+                    }
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(invite)) }) {
+                        Text("کپی لینک دعوت")
+                    }
+                    Text(
+                        "QR و لینک دقیقاً یک چیزند؛ هرکدام را با مخاطب به اشتراک بگذاری کافی است. سپس اثر انگشت را از راهی مستقل مقایسه کنید.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = { TextButton(onClick = { showIdentity = false }) { Text("بستن") } }
@@ -258,7 +290,7 @@ private fun ConversationRow(repo: AppRepository, item: ConversationEntity, onCli
             Text(formatListTime(item.lastActivity), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(4.dp))
             Text(
-                if (item.id.startsWith("lan-")) "LAN" else "محلی",
+                if (item.id.startsWith("dm-")) "اینترنت" else "محلی",
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 10.sp
             )

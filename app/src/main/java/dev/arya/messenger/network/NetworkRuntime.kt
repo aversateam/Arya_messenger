@@ -104,7 +104,7 @@ class DefaultNetworkRuntime(
         }
     }
 
-    /** Falls back to the address list when the peer identity is not known yet (LAN dialing). */
+    /** Falls back to the address list when the peer identity is not known yet. */
     private fun backoffKey(target: PeerRef, route: RouteKind): String {
         val identity = target.publicKey.trim().ifBlank { target.addresses.joinToString(",") }
         return "$identity|$route"

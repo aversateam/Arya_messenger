@@ -103,6 +103,7 @@ interface MessengerDao {
     @Query("SELECT * FROM messages WHERE conversationId = :id ORDER BY createdAt DESC LIMIT 1") fun observeLastMessage(id: String): Flow<MessageEntity?>
     @Query("SELECT * FROM attachments WHERE conversationId = :id ORDER BY createdAt DESC LIMIT 1") fun observeLastAttachment(id: String): Flow<AttachmentEntity?>
     @Insert suspend fun insertMessage(message: MessageEntity)
+    @Query("UPDATE messages SET status = :status WHERE id = :id") suspend fun updateMessageStatus(id: String, status: String)
     @Query("SELECT * FROM conversations WHERE id = :id LIMIT 1") suspend fun findConversation(id: String): ConversationEntity?
     @Insert suspend fun insertGroup(group: GroupEntity)
     @Insert suspend fun insertMembers(members: List<GroupMemberEntity>)

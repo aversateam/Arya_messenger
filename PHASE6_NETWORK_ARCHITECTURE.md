@@ -1,143 +1,122 @@
 # Arya Messenger — Phase 6 Network Architecture
 
-Last updated: 2026-11-10 · Status: **Phase 6.2 code complete, build verification owned by the user**
-
-This document describes the intended architecture and the decisions behind it. It deliberately
-separates what is implemented from what is planned; see `PHASE6_IMPLEMENTATION_STATUS.md` for the
-honest current state.
-
----
+Last updated: 2026-11-10 · Status: **Phase 6.2 code complete, build verification owned by the project owner**
 
 ## 1. Design constraints
 
-1. **Zero infrastructure cost.** No company server, no paid relay, no bootstrap fleet. The app must
-   work with nothing configured.
-2. **No central identity.** No phone number, email, username, or user directory.
-3. **Existing code is the source of truth.** Phase 4 transport crypto and Phase 5 group crypto are
+1. **No local-network mode.** There is no LAN transport, no mDNS/NSD, no device discovery, no subnet
+   advertisement and no LAN UI. Every message crosses the internet.
+2. **Zero infrastructure cost.** No company server, no paid relay, no bootstrap fleet. The app works
+   with nothing configured, and any user can run a node.
+3. **No central identity.** No phone number, email, username, directory, or account.
+4. **Existing code is the source of truth.** Phase 4 session crypto and Phase 5 group crypto are
    reused, not replaced.
-4. **Transport is replaceable.** UI, Room, conversations and group logic must not know which
-   transport delivered a message.
-5. **Metadata honesty.** Encryption of content does not mean anonymity. Operators see metadata.
+5. **Transport is replaceable.** UI, Room, conversations and group logic never know which transport
+   delivered a message.
 
 ## 2. Layers
 
 ```
-UI (Compose)            HomeScreen · ContactsScreen · ConversationScreen · LanScreen
-                          │  only knows NetworkRuntime + AppRepository
+UI (Compose)            HomeScreen · ContactsScreen · ConversationScreen · NetworkScreen
+                          │  only knows NetworkRuntime + AppRepository + NetworkConfig
 Data                    AppRepository (Room) · NetworkConfig (SharedPreferences)
-                          │  recordIncoming / recordOutgoing keyed by peer identity
+                          │  recordIncoming / recordOutgoing keyed by proven peer identity
 Network API             NetworkRuntime · PeerTransport · PeerRef · DeliveryOutcome · NetworkState
-                          │  route selection, observable state, no UI or DB knowledge
 Network core            DefaultNetworkRuntime (ordering, backoff, outcome reporting)
-Transports              LanTransportAdapter (LAN_TCP) · DirectTcpTransport (DIRECT_TCP)
-                        RelayPeerTransport (RELAY) · RelayNode (optional, user-operated)
-Session security        PeerSessionProtocol (Phase 4: signed transcript + ECDH + AES-GCM)
-Identity                IdentityKeys (Keystore P-256) · PeerIds · TransportIdentity (L2 binding)
+Transports              DirectTcpTransport (DIRECT_TCP) · RelayPeerTransport (RELAY)
+                          └─ RelayNode: optional user-operated byte-pipe node
+Session security        PeerSessionProtocol (signed transcript + ECDH + AES-GCM)
+Identity                IdentityKeys (Keystore P-256) · PeerIds · RendezvousToken
 ```
 
-`PeerTransport` is the replaceable seam:
+Routes, in the order the runtime tries them:
 
-```kotlin
-interface PeerTransport {
-    val kind: RouteKind
-    val available: StateFlow<Boolean>
-    fun start(displayName: String)
-    fun stop()
-    suspend fun send(target: PeerRef, payload: ByteArray): DeliveryOutcome
-}
-```
+1. **DIRECT_TCP** — dial a reachable `host:port`, and accept inbound sessions on this device.
+   Needs no third party. Cannot reach carrier-grade NAT.
+2. **RELAY** — pair through a node both sides configured. Works behind NAT because both connections
+   are outbound.
 
 `DeliveryOutcome.Delivered` carries `authenticatedPeer` — the key the handshake proved. That is the
-only identity a message may be stored against; a dialled address is a hint, never an identity.
+only identity a message may be stored against; an address is a hint, never an identity.
 
 ## 3. ADRs
 
 ### ADR-001 — Abstraction now, transport library behind a gate
-`jvm-libp2p` is actively released and has an Android sample, but its own support matrix lists QUIC,
-yamux, AutoNAT and Circuit Relay v2 as beta and has **no** hole punching, **no** Kademlia DHT, **no**
-bootstrap, **no** rendezvous. go-libp2p has all of those but requires Go + NDK + `gomobile` and an
-out-of-tree `.aar`.
-The durable asset is the abstraction; the dependency is not. Nothing in `:app` depends on either
-library. The gate criteria and procedure are in the status document.
+`jvm-libp2p` lists QUIC, yamux, AutoNAT and Circuit Relay v2 as beta, and has **no** hole punching,
+**no** Kademlia DHT, **no** bootstrap and **no** rendezvous. go-libp2p has all of them but needs Go +
+NDK + `gomobile` and an out-of-tree `.aar`. The durable asset is the abstraction, so nothing in
+`:app` depends on either library yet.
 
-### ADR-002 — Rendezvous over DHT, and no bootstrap constants
-A public Kademlia DHT is a crawlable index and would become a searchable address book, which
-violates the privacy requirement. Discovery therefore uses address hints carried out of band (QR)
-plus relay pairing by peer identity. No bootstrap or relay endpoint is hardcoded anywhere.
+### ADR-002 — No DHT, no bootstrap constants
+A public Kademlia DHT is a crawlable index and would become a searchable address book. Discovery is
+therefore out of band: QR identity exchange, optional reachability hints, and relay pairing. No
+endpoint is compiled in.
 
-### ADR-003 — Two-layer identity, Keystore remains the root
-The Keystore P-256 key is non-exportable, so a libp2p host cannot be handed it. `TransportIdentity`
-provisions a separate transport keypair, sealed with a Keystore-backed AES-GCM vault, whose public
-key is signed by the root P-256 key over a domain-separated, length-prefixed transcript
-(`arya/phase6/transport-key-binding/v1`). This mirrors libp2p's own "Noise static key authenticated
-by the identity key" rule. Fingerprints, QR cards, contacts and group membership are unchanged.
+### ADR-003 — Rotating rendezvous handles instead of peer ids
+A relay must key on *something*. Publishing the permanent identity digest would let any node link all
+of a device's traffic to one stable pseudonym and build a social graph, and would let a node follow a
+device indefinitely.
 
-### ADR-004 — Transport encryption is not end-to-end encryption
-`PeerSessionProtocol` protects one connection. It is not a Double Ratchet session, has no
-per-message forward secrecy, and cannot serve an offline recipient. The app must never label it E2EE.
-An independent payload-sealing layer is Phase 6.6, and the only acceptable implementations there are
-audited protocols. **libsignal is AGPL-3.0 and therefore unusable for this project as licensed**;
-Olm/Megolm (Apache-2.0) and OpenMLS (MIT, Rust/JNI) are the realistic candidates.
+`RendezvousToken.inboxHandle(publicKey, window)` instead hashes the recipient's identity digest with a
+15-minute window. Any sender who already knows the recipient's key derives the same handle; the node
+cannot link it to an identity without already knowing that key; and it is completely different in the
+next window. The node sees "someone is attached to handle X now" and nothing more.
 
-### ADR-005 — User-owned endpoints, no operator dependency
-Relay and direct endpoints live in `NetworkConfig`, entered by the user or imported from a scanned
-QR invitation. There is nothing to pay for, and nothing a third party can shut down.
+Two slots (current and next window) absorb normal clock skew between phones.
 
-## 4. Connection strategy
+### ADR-004 — Two-layer identity, Keystore remains the root
+The Keystore P-256 key is non-exportable, so a future libp2p host cannot be handed it.
+`TransportIdentity` provisions a separate transport keypair sealed by a Keystore-backed AEAD vault and
+signs its public key with the root key over a domain-separated transcript. It is **provisioned but not
+yet consumed** — it exists for the ADR-001 gate, and fingerprints, QR cards, contacts and group
+membership are unchanged.
 
-Order, cheapest first:
+### ADR-005 — Transport encryption is not end-to-end encryption
+`PeerSessionProtocol` protects one connection. It has no per-message forward secrecy and cannot serve
+an offline recipient. It must never be labelled E2EE. That layer is Phase 6.6, and only audited
+protocols are acceptable there. **libsignal is AGPL-3.0 and unusable for this project as licensed**;
+Olm/Megolm (Apache-2.0) and OpenMLS (MIT) are the realistic candidates.
 
-1. **LAN TCP** — same subnet, no dependency, already proven.
-2. **Direct TCP** — the peer's advertised `host:port`. Needs an actually reachable peer (public
-   address, forwarded port, shared VPN). Costs nothing.
-3. **Relay** — both sides dial out to a node they both configured. Works behind carrier-grade NAT
-   because neither side accepts an inbound connection.
-
-Escalation stops at the first `Delivered`. A route that just failed for a peer is skipped for 15 s,
-except the cheapest available route, so a user retry is never silently swallowed while expensive
-escalation is not repeated on every attempt.
-
-Nothing is stored server-side, so an offline recipient is reported as `UNREACHABLE`, not queued.
-Store-and-forward is Phase 6.5 and requires sealed envelopes from 6.6.
-
-## 5. Relay model
+## 4. Relay model
 
 The relay is a **dumb byte pipe**, not a messaging server:
 
-- `DELIVER(selfId → targetId)` arrives from a sender and waits up to 15 s.
-- `INBOX(selfId)` is a persistent outbound connection from some device.
+- `DELIVER(handle)` arrives from a sender and waits up to 8 s.
+- `INBOX(handle)` is a persistent outbound connection from a device, one per window slot.
 - On a match the node replies `PAIRED_INITIATOR` / `PAIRED_RESPONDER` and splices the two sockets.
-- The two peers then run the normal signed handshake through the splice.
+- The peers then run the normal signed handshake through the splice.
 
-The node therefore sees only ciphertext after the handshake. It stores nothing, has no user
-database, and requires no account.
+The node stores nothing, has no user database, and requires no account.
 
-**Metadata a node operator can observe:** which peer IDs connect, when, from which source IP, how
-long each session lasts, and roughly how much data each session carries. It cannot read message
-content, and it cannot enumerate a user's contact list.
+**Metadata a node operator can observe:** that two connections are attached to the same rotating
+handle, their source IPs, session start time, duration and rough byte volume. It cannot read message
+content, cannot enumerate contacts, and cannot link a handle to an identity or to the previous window.
 
-**Direct-endpoint and QR-hint metadata:** an advertised endpoint reveals that a device is reachable
-at an address and is willing to accept connections there. That is the trade-off for not needing a
-server, and it is why the hint is optional and user-entered.
-
-## 6. Privacy boundaries
+## 5. What anonymity means here — and does not
 
 | Property | State |
 |---|---|
-| No phone number / email / username | implemented — identity is a local keypair |
-| Private keys on device | implemented — P-256 in Keystore; transport key sealed by Keystore AEAD |
-| Public-key peer authentication | implemented — signed transcript binds both keys, names, ephemerals, nonces, roles |
-| Contact list never published | implemented — no directory, no DHT, contacts stay in local Room |
-| QR invitations | implemented (v1 identity, v2 identity + optional reachability hints) |
+| No phone number / email / username | implemented |
+| No central directory or DHT | implemented |
+| Private keys stay on device | implemented — P-256 in Keystore, transport key sealed by Keystore AEAD |
+| Peer authentication by public key | implemented — signed transcript binds both keys, names, ephemerals, nonces, roles |
+| Contact list never published | implemented |
+| Relay cannot link traffic to an identity | implemented — rotating window handles (ADR-003) |
+| Relay cannot see message content | implemented — session is encrypted end to end across the splice |
+| Relay cannot see your IP | **no** — a relay sees the source address of every connection |
+| Hidden message size/timing | **no** |
+| Rotating network identity on the wire | relay handles rotate; the P-256 identity does not |
 | Revocable invitations | **not implemented** |
-| Rotating network identifiers | **not implemented** |
-| Anonymous routing | **not implemented** — relays see source IPs |
-| Message content readable by relays | no — the session is encrypted end to end across the splice |
-| Message size/timing hidden | no — not even after 6.6 |
+| Tor / anonymous routing | **not implemented** |
 
-Do not describe the current build as anonymous. It is not.
+Two honest conclusions: a relay operator can always tell *that* traffic happened from an IP address at
+a time, even though it cannot tell who or what. True network-layer anonymity requires Tor, which is
+Phase 6.7. Do not describe the current build as anonymous on the network layer.
 
-## 7. Cryptographic inventory
+A direct connection additionally reveals your IP to the peer you are talking to, but only to a
+verified contact.
+
+## 6. Cryptographic inventory
 
 | Purpose | Mechanism | Location |
 |---|---|---|
@@ -147,14 +126,14 @@ Do not describe the current build as anonymous. It is not.
 | Session record | AES-256-GCM, sequence as AAD, replay rejection | `security/EphemeralSessionCrypto.kt` |
 | Secret wrapping | AES-256-GCM under a non-exportable Keystore key | `security/KeystoreAesVault.kt` |
 | Group envelope | AES-256-GCM + P-256 signature, epoch-bound | `security/GroupCrypto.kt` |
-| Peer identifiers | SHA-256 over SPKI DER, reusing the fingerprint | `security/PeerIds.kt` |
+| Peer identifiers | SHA-256 over SPKI DER | `security/PeerIds.kt` |
+| Relay handles | SHA-256 of identity digest + 15-minute window | `security/RendezvousToken.kt` |
 
-No new cryptographic primitive or protocol was invented in Phase 6.1/6.2.
+No new cryptographic primitive or protocol was invented in Phase 6.
 
-## 8. Android execution strategy
+## 7. Android execution strategy
 
-The runtime currently lives in `AryaApplication`: one repository, one Room instance, one network
-runtime, one optional relay node. It survives rotation, but it does **not** survive process death or
-Doze. Reliable background delivery needs a foreground service with
-`FOREGROUND_SERVICE_DATA_SYNC` + `POST_NOTIFICATIONS`, a notification channel, and a reconnect
-policy — that is Phase 6.5, and until then no always-on connectivity is claimed.
+The runtime lives in `AryaApplication`: one repository, one Room instance, one network runtime, one
+optional relay node. It survives rotation but **not** process death or Doze. Reliable background
+delivery needs a foreground service with `FOREGROUND_SERVICE_DATA_SYNC` + `POST_NOTIFICATIONS` — that
+is Phase 6.5, and until then no always-on connectivity is claimed.

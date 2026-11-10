@@ -1,6 +1,5 @@
 package dev.arya.messenger.security
 
-import java.security.MessageDigest
 import java.util.Base64
 
 /**
@@ -34,11 +33,4 @@ object PeerIds {
     fun peerId(publicKeyBase64: String): String = PEER_PREFIX + digest(publicKeyBase64)
 
     fun conversationId(publicKeyBase64: String): String = CONVERSATION_PREFIX + digest(publicKeyBase64)
-
-    /**
-     * Raw 32-byte SHA-256 over the SPKI DER, used as the on-the-wire handle for a peer.
-     * Raw bytes rather than hex keep relay pairings short and fixed-size.
-     */
-    fun digestBytes(publicKeyBase64: String): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(Base64.getDecoder().decode(normalize(publicKeyBase64)))
 }

@@ -17,7 +17,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Cryptographic building blocks for one authenticated, ephemeral LAN session.
+ * Cryptographic building blocks for one authenticated, ephemeral session.
  * The caller MUST authenticate/sign the complete handshake transcript with the
  * long-term identity keys and MUST compare both identities with verified contacts
  * before using the returned keys. This class does not perform trust decisions.

@@ -1,24 +1,26 @@
 package dev.arya.messenger.network
 
-/** How a message actually travelled. Never inferred from configuration or discovery. */
-enum class RouteKind { LAN_TCP, DIRECT_QUIC, DIRECT_TCP, RELAY }
+/**
+ * How a message actually travelled. Never inferred from configuration or discovery.
+ *
+ * There is no local-network route: Arya has no LAN mode, no mDNS/NSD, and no subnet discovery.
+ * Every message crosses the internet.
+ */
+enum class RouteKind { DIRECT_QUIC, DIRECT_TCP, RELAY }
 
 /**
- * Where a peer might be reachable. Addresses are unauthenticated hints: they are supplied by a
- * user, by LAN discovery, by a QR invitation, or by a relay, and none of them prove who is
- * answering.
+ * Where a peer might be reachable. Addresses are unauthenticated hints: they are supplied by a user
+ * or by a contact's QR invitation, and none of them prove who is answering.
  */
 sealed interface PeerAddress {
 
-    /** A TCP endpoint on the local network or on the internet. */
-    data class Tcp(val host: String, val port: Int, val scope: Scope = Scope.INTERNET) : PeerAddress {
-        enum class Scope { LAN, INTERNET }
-    }
+    /** A TCP endpoint on the internet, e.g. "203.0.113.5:45871". */
+    data class Tcp(val host: String, val port: Int) : PeerAddress
 
     /** libp2p multiaddr. Validated by the internet transport adapter, never here. */
     data class Multi(val address: String) : PeerAddress
 
-    /** Operator- or user-supplied relay endpoint, e.g. "host:port". */
+    /** User- or contact-supplied relay endpoint, e.g. "relay.example:45890". */
     data class RelayHint(val address: String) : PeerAddress
 }
 
@@ -26,9 +28,8 @@ sealed interface PeerAddress {
  * A peer we intend to reach.
  *
  * [publicKey] is the Base64 SPKI identity of the root P-256 key. It is blank when the target is
- * known only by address (manual IP entry, NSD discovery, relay hint). In that case the identity is
- * established by the transport handshake and reported back in
- * [DeliveryOutcome.Delivered.authenticatedPeer] — never assumed from the address.
+ * known only by address. In that case the identity is established by the transport handshake and
+ * reported back in [DeliveryOutcome.Delivered.authenticatedPeer] — never assumed from the address.
  */
 data class PeerRef(
     val publicKey: String = "",

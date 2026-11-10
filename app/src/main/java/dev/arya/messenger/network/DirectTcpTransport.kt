@@ -9,40 +9,45 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Direct internet TCP dial.
+ * Direct internet TCP: the only route that needs no third party at all.
  *
- * This is the only internet route that needs no third party at all, so it costs nothing to
- * operate. It works when the peer is actually reachable: a public address, a forwarded port, a
- * self-hosted node, or a shared VPN. It cannot reach a peer behind carrier-grade NAT, which is why
- * [dev.arya.messenger.network.relay.RelayPeerTransport] exists.
+ * This transport dials out. Inbound direct sessions are accepted by
+ * [dev.arya.messenger.network.PeerEntryPort], which shares one port with the relay role, so there is
+ * no separate listener here.
  *
- * The session protocol is the same authenticated one used on the LAN.
+ * The route works when the peer is genuinely reachable (public address, forwarded port, self-hosted
+ * node, or a shared VPN). It cannot reach a peer behind carrier-grade NAT; that is what the relay
+ * route is for.
  */
 class DirectTcpTransport(
     private val protocol: PeerSessionProtocol,
     private val localIdentity: suspend () -> IdentityEntity?,
     private val clock: () -> Long = System::currentTimeMillis
-) : PeerTransport {
+) : PeerTransport, AutoCloseable {
 
     override val kind: RouteKind = RouteKind.DIRECT_TCP
 
-    private val _available = MutableStateFlow(true)
+    private val _available = MutableStateFlow(false)
     override val available: StateFlow<Boolean> = _available.asStateFlow()
 
+    private val running = AtomicBoolean(false)
+
     override fun start(displayName: String) {
-        _available.value = true
+        _available.value = running.compareAndSet(false, true)
     }
 
     override fun stop() {
+        running.set(false)
         _available.value = false
     }
 
+    override fun close() = stop()
+
     override suspend fun send(target: PeerRef, payload: ByteArray): DeliveryOutcome {
-        val addresses = target.addresses
-            .filterIsInstance<PeerAddress.Tcp>()
-            .filter { it.scope == PeerAddress.Tcp.Scope.INTERNET }
+        val addresses = target.addresses.filterIsInstance<PeerAddress.Tcp>()
         if (addresses.isEmpty()) return DeliveryOutcome.Failed(kind, FailureReason.UNREACHABLE)
 
         val identity = localIdentity() ?: return DeliveryOutcome.Failed(kind, FailureReason.TRANSPORT_UNAVAILABLE)
@@ -72,12 +77,14 @@ class DirectTcpTransport(
         runCatching {
             Socket().use { socket ->
                 socket.connect(InetSocketAddress(address.host.trim(), address.port), CONNECT_TIMEOUT_MILLIS)
-                protocol.initiate(socket, identity, text)
+                socket.soTimeout = PeerSessionProtocol.TIMEOUT_MILLIS
+                protocol.initiate(socket.getInputStream(), socket.getOutputStream(), identity, text)
             }
         }
     }
 
-    private companion object {
-        const val CONNECT_TIMEOUT_MILLIS = 5_000
+    companion object {
+        const val DEFAULT_PORT = 45871
+        private const val CONNECT_TIMEOUT_MILLIS = 5_000
     }
 }

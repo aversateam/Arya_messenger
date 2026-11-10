@@ -1,7 +1,7 @@
 package dev.arya.messenger.network
 
-import dev.arya.messenger.data.LanFailure
-import dev.arya.messenger.data.LanTransportException
+import dev.arya.messenger.data.PeerSessionException
+import dev.arya.messenger.data.SessionFailure
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -19,11 +19,11 @@ internal fun decodeUtf8(payload: ByteArray): String? = runCatching {
 }.getOrNull()
 
 internal fun classifyFailure(error: Throwable?): FailureReason = when (error) {
-    is LanTransportException -> when (error.failure) {
-        LanFailure.UNTRUSTED_PEER -> FailureReason.UNTRUSTED_PEER
-        LanFailure.AUTH_FAILED -> FailureReason.AUTH_FAILED
-        LanFailure.PAYLOAD_INVALID -> FailureReason.PAYLOAD_INVALID
-        LanFailure.PROTOCOL -> FailureReason.UNREACHABLE
+    is PeerSessionException -> when (error.failure) {
+        SessionFailure.UNTRUSTED_PEER -> FailureReason.UNTRUSTED_PEER
+        SessionFailure.AUTH_FAILED -> FailureReason.AUTH_FAILED
+        SessionFailure.PAYLOAD_INVALID -> FailureReason.PAYLOAD_INVALID
+        SessionFailure.PROTOCOL -> FailureReason.UNREACHABLE
     }
     is SocketTimeoutException -> FailureReason.TIMEOUT
     else -> FailureReason.UNREACHABLE

@@ -6,3 +6,9 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Release signing material must never be committed.
+keystore.properties
+*.jks
+*.keystore
+

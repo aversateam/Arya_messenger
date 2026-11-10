@@ -69,6 +69,13 @@ import dev.arya.messenger.data.AttachmentEntity
 import dev.arya.messenger.data.ContactEntity
 import dev.arya.messenger.data.GroupMemberEntity
 import dev.arya.messenger.data.MessageEntity
+import dev.arya.messenger.data.NetworkConfig
+import dev.arya.messenger.network.DeliveryOutcome
+import dev.arya.messenger.network.NetworkRuntime
+import dev.arya.messenger.network.PeerAddress
+import dev.arya.messenger.network.PeerRef
+import dev.arya.messenger.network.RouteKind
+import dev.arya.messenger.network.relay.RelayProtocol
 import dev.arya.messenger.ui.components.EmojiText
 import dev.arya.messenger.ui.components.EmojiPicker
 import dev.arya.messenger.ui.components.deleteLastCodepoint
@@ -128,7 +135,13 @@ private fun buildTimeline(messages: List<MessageEntity>, attachments: List<Attac
 }
 
 @Composable
-fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostController) {
+fun ConversationScreen(
+    repo: AppRepository,
+    id: String,
+    network: NetworkRuntime,
+    config: NetworkConfig,
+    navController: NavHostController
+) {
     val context = LocalContext.current
     val messages by repo.messages(id).collectAsStateWithLifecycle(initialValue = emptyList())
     val attachments by repo.attachments(id).collectAsStateWithLifecycle(initialValue = emptyList())
@@ -159,7 +172,7 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
     }
 
     val timeline = remember(messages, attachments) { buildTimeline(messages, attachments) }
-    val isLan = id.startsWith("lan-")
+    val isInternet = id.startsWith("dm-")
 
     Scaffold(
         topBar = {
@@ -168,7 +181,7 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                     Column {
                         Text(title, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                         Text(
-                            if (isLan) "آزمایش LAN امن • یک پیام در هر نشست" else if (isGroup) "گروه رمزنگاری‌شده • فقط محلی" else "ذخیره‌سازی محلی • بدون اتصال",
+                            if (isInternet) "اینترنت • یک پیام در هر نشست" else if (isGroup) "گروه رمزنگاری‌شده • فقط محلی" else "ذخیره‌سازی محلی",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -229,7 +242,41 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                                 onClick = {
                                     val body = text
                                     input = TextFieldValue("")
-                                    repoScope { repo.sendLocal(id, body) }
+                                    if (isGroup) {
+                                        repoScope { repo.sendLocal(id, body) }
+                                    } else {
+                                        repoScope {
+                                            // Store first so a failed send never loses typed text.
+                                            val messageId = repo.appendOutgoing(id, body)
+                                            val peer = repo.peerForConversation(id)
+                                            if (peer == null) {
+                                                repo.markMessage(messageId, "FAILED · NO INVITE")
+                                                return@repoScope
+                                            }
+                                            val hint = config.peerHint(peer.publicKey)
+                                            val addresses = buildList<PeerAddress> {
+                                                hint?.endpoint?.let { RelayProtocol.parseEndpoint(it) }
+                                                    ?.let { add(PeerAddress.Tcp(it.host, it.port)) }
+                                            }
+                                            val outcome = network.send(
+                                                PeerRef(
+                                                    publicKey = peer.publicKey,
+                                                    displayName = peer.displayName,
+                                                    addresses = addresses
+                                                ),
+                                                body.toByteArray(Charsets.UTF_8)
+                                            )
+                                            repo.markMessage(
+                                                messageId,
+                                                when (outcome) {
+                                                    is DeliveryOutcome.Delivered ->
+                                                        if (outcome.route == RouteKind.RELAY) "SENT · RELAY" else "SENT · DIRECT"
+                                                    is DeliveryOutcome.Failed -> "FAILED · ${outcome.reason}"
+                                                    is DeliveryOutcome.Queued -> "QUEUED"
+                                                }
+                                            )
+                                        }
+                                    }
                                 },
                                 modifier = Modifier.size(38.dp).clip(CircleShape)
                                     .background(MaterialTheme.colorScheme.primary),

@@ -243,7 +243,32 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
     suspend fun saveTransportIdentity(publicKey: String, sealedKey: ByteArray) =
         dao.saveTransportIdentity(publicKey, sealedKey)
 
-    private suspend fun upsertPeer(peerPublicKey: String, peerName: String, route: RouteKind): String {
+    /** Creates the single conversation thread for a peer without sending anything. */
+    suspend fun ensureDirectConversation(peerPublicKey: String, displayName: String): String = db.withTransaction {
+        val conversationId = PeerIds.conversationId(peerPublicKey)
+        val title = upsertPeer(peerPublicKey, displayName, null)
+        if (dao.getConversation(conversationId) == null) {
+            dao.insertConversation(ConversationEntity(conversationId, title))
+        }
+        conversationId
+    }
+
+    /** Resolves the peer behind a direct conversation, if that conversation is peer-scoped. */
+    suspend fun peerForConversation(conversationId: String): PeerEntity? =
+        if (conversationId.startsWith("dm-")) dao.getPeer("pk:" + conversationId.removePrefix("dm-")) else null
+
+    /** Stores an outgoing message before sending it, so typed text is never lost on failure. */
+    suspend fun appendOutgoing(conversationId: String, text: String): String = db.withTransaction {
+        require(text.isNotBlank()) { "پیام خالی است" }
+        val messageId = UUID.randomUUID().toString()
+        dao.insertMessage(MessageEntity(messageId, conversationId, text, true, status = "QUEUED"))
+        dao.touchConversation(conversationId, System.currentTimeMillis())
+        messageId
+    }
+
+    suspend fun markMessage(messageId: String, status: String) = dao.updateMessageStatus(messageId, status)
+
+    private suspend fun upsertPeer(peerPublicKey: String, peerName: String, route: RouteKind?): String {
         val peerId = PeerIds.peerId(peerPublicKey)
         val existing = dao.getPeer(peerId)
         val now = System.currentTimeMillis()
@@ -255,7 +280,7 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
                 displayName = title,
                 firstSeenAt = existing?.firstSeenAt ?: now,
                 lastSeenAt = now,
-                lastRoute = route.name,
+                lastRoute = route?.name ?: existing?.lastRoute ?: RouteKind.DIRECT_TCP.name,
                 transportPeerId = existing?.transportPeerId
             )
         )
@@ -263,7 +288,6 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
     }
 
     private fun statusFor(route: RouteKind, outgoing: Boolean): String = when (route) {
-        RouteKind.LAN_TCP -> if (outgoing) "SENT ON LAN" else "RECEIVED ON LAN"
         RouteKind.DIRECT_QUIC, RouteKind.DIRECT_TCP -> if (outgoing) "SENT · DIRECT" else "RECEIVED · DIRECT"
         RouteKind.RELAY -> if (outgoing) "SENT · RELAY" else "RECEIVED · RELAY"
     }

@@ -1,7 +1,7 @@
 package dev.arya.messenger.data
 
 import android.content.Context
-import dev.arya.messenger.network.relay.RelayNode
+import dev.arya.messenger.network.relay.RelayProtocol
 import dev.arya.messenger.security.PeerIds
 
 /**
@@ -42,11 +42,9 @@ class NetworkConfig(context: Context) {
             prefs.edit().putBoolean(KEY_NODE_MODE, value).apply()
         }
 
-    var nodePort: Int
-        get() = prefs.getInt(KEY_NODE_PORT, RelayNode.DEFAULT_PORT)
-        set(value) {
-            prefs.edit().putInt(KEY_NODE_PORT, value).apply()
-        }
+    /** Port this device should accept direct connections on, taken from its advertised endpoint. */
+    fun directListenPort(defaultPort: Int): Int =
+        RelayProtocol.parseEndpoint(publicEndpoint)?.port ?: defaultPort
 
     /** Reachability hints a contact shared in their QR invitation. */
     data class PeerHint(val endpoint: String? = null, val relay: String? = null)
@@ -74,7 +72,6 @@ class NetworkConfig(context: Context) {
         const val KEY_RELAYS = "relay_endpoints"
         const val KEY_ENDPOINT = "public_endpoint"
         const val KEY_NODE_MODE = "node_mode"
-        const val KEY_NODE_PORT = "node_port"
         const val HINT_PREFIX = "hint_"
     }
 }

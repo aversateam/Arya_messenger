@@ -2,76 +2,41 @@ package dev.arya.messenger.network.relay
 
 import java.io.DataInputStream
 import java.io.DataOutputStream
-import java.net.ServerSocket
+import java.io.InputStream
+import java.io.OutputStream
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Optional relay node that any Arya user can run on their own device.
  *
  * This is what keeps the network free to operate: there is no company-run server. A node is a dumb
- * byte pipe that pairs two outbound connections by peer id and splices them together. It stores
- * nothing, so it cannot leak message history, and it cannot read message content because the peers
- * encrypt end to end through the splice.
+ * byte pipe that pairs two outbound connections on a rotating window handle and splices them
+ * together. It stores nothing, so it cannot leak message history, has no user database and requires
+ * no account. It cannot read message content because the peers encrypt end to end through the
+ * splice.
  *
- * It is only useful if other devices can reach it — a node behind carrier-grade NAT helps nobody.
- * Node mode is therefore opt-in and documented as "for publicly reachable devices, or devices
- * sharing a VPN".
+ * It does not own a socket: [dev.arya.messenger.network.PeerEntryPort] accepts connections on the
+ * single shared port and hands relay traffic here.
  */
-class RelayNode(
-    private val listenPort: Int = DEFAULT_PORT,
-    private val maxConnections: Int = MAX_CONNECTIONS
-) : AutoCloseable {
+class RelayNode(private val maxConnections: Int = MAX_CONNECTIONS) : AutoCloseable {
 
-    companion object {
-        const val DEFAULT_PORT = 45890
-        private const val MAX_CONNECTIONS = 64
-        private const val HELLO_TIMEOUT_MILLIS = 10_000
-        private const val PAIR_WAIT_MILLIS = 15_000L
-        private const val POLL_INTERVAL_MILLIS = 250L
-    }
-
-    private val running = AtomicBoolean(false)
     private val active = AtomicInteger(0)
     private val waiting = ConcurrentHashMap<String, Waiting>()
-
-    @Volatile
-    private var server: ServerSocket? = null
 
     private class Waiting(val socket: Socket) {
         val paired = CountDownLatch(1)
     }
 
-    fun start() {
-        if (!running.compareAndSet(false, true)) return
-        Thread {
-            try {
-                ServerSocket(listenPort).use { listener ->
-                    server = listener
-                    while (running.get()) {
-                        val client = try { listener.accept() } catch (_: Exception) { break }
-                        Thread { handle(client) }.apply { name = "arya-relay-node-peer"; isDaemon = true }.start()
-                    }
-                }
-            } catch (_: Exception) {
-                running.set(false)
-            }
-        }.apply { name = "arya-relay-node"; isDaemon = true }.start()
-    }
-
-    override fun close() {
-        running.set(false)
-        runCatching { server?.close() }
-        server = null
-        waiting.values.forEach { runCatching { it.socket.close() } }
-        waiting.clear()
-    }
-
-    private fun handle(socket: Socket) {
+    /**
+     * Handles one connection that has already been identified as relay traffic by its magic.
+     * [input] may be a pushback stream still holding those four bytes; everything after the hello is
+     * read from the raw socket, because the pushback buffer is empty by then.
+     */
+    fun handle(socket: Socket, input: InputStream, output: OutputStream) {
         if (active.incrementAndGet() > maxConnections) {
             active.decrementAndGet()
             runCatching { socket.close() }
@@ -81,33 +46,33 @@ class RelayNode(
         var ownedBySplice = false
         try {
             socket.soTimeout = HELLO_TIMEOUT_MILLIS
-            val input = DataInputStream(socket.getInputStream())
-            val out = DataOutputStream(socket.getOutputStream())
-            val hello = RelayProtocol.readHello(input)
+            val source = DataInputStream(input)
+            val sink = DataOutputStream(output)
+            val hello = RelayProtocol.readHello(source)
+            val key = RelayProtocol.keyOf(hello.token)
 
             when (hello.role) {
                 RelayProtocol.Role.DELIVER -> {
-                    val inbox = awaitInbox(RelayProtocol.keyOf(hello.targetId))
+                    val inbox = awaitInbox(key)
                     if (inbox == null) {
-                        RelayProtocol.writeStatus(out, RelayProtocol.Status.PEER_OFFLINE)
+                        RelayProtocol.writeStatus(sink, RelayProtocol.Status.PEER_OFFLINE)
                         return
                     }
-                    RelayProtocol.writeStatus(out, RelayProtocol.Status.PAIRED_INITIATOR)
+                    RelayProtocol.writeStatus(sink, RelayProtocol.Status.PAIRED_INITIATOR)
                     inbox.paired.countDown()
                     ownedBySplice = true
                     splice(socket, inbox.socket)
                 }
 
                 RelayProtocol.Role.INBOX -> {
-                    val key = RelayProtocol.keyOf(hello.selfId)
                     val entry = Waiting(socket)
                     waiting.put(key, entry)?.let { stale -> runCatching { stale.socket.close() } }
                     try {
                         if (!entry.paired.await(PAIR_WAIT_MILLIS, TimeUnit.MILLISECONDS)) {
-                            RelayProtocol.writeStatus(out, RelayProtocol.Status.REJECTED)
+                            RelayProtocol.writeStatus(sink, RelayProtocol.Status.REJECTED)
                             return
                         }
-                        RelayProtocol.writeStatus(out, RelayProtocol.Status.PAIRED_RESPONDER)
+                        RelayProtocol.writeStatus(sink, RelayProtocol.Status.PAIRED_RESPONDER)
                         // The DELIVER side owns the splice; this socket is now its responsibility.
                         ownedBySplice = true
                     } finally {
@@ -121,6 +86,11 @@ class RelayNode(
             if (!ownedBySplice) runCatching { socket.close() }
             active.decrementAndGet()
         }
+    }
+
+    override fun close() {
+        waiting.values.forEach { runCatching { it.socket.close() } }
+        waiting.clear()
     }
 
     /** Waits briefly for an inbox to attach, so a slightly late recipient still pairs. */
@@ -157,5 +127,12 @@ class RelayNode(
                 output.flush()
             }
         }
+    }
+
+    private companion object {
+        const val MAX_CONNECTIONS = 64
+        const val HELLO_TIMEOUT_MILLIS = 10_000
+        const val PAIR_WAIT_MILLIS = 8_000L
+        const val POLL_INTERVAL_MILLIS = 200L
     }
 }

@@ -18,7 +18,6 @@ import dev.arya.messenger.security.IdentityKeys
 import dev.arya.messenger.ui.screens.ContactsScreen
 import dev.arya.messenger.ui.screens.ConversationScreen
 import dev.arya.messenger.ui.screens.HomeScreen
-import dev.arya.messenger.ui.screens.LanScreen
 import dev.arya.messenger.ui.screens.OnboardingScreen
 import dev.arya.messenger.ui.theme.AryaTheme
 import kotlinx.coroutines.CoroutineScope
@@ -30,7 +29,6 @@ import java.util.UUID
 object Routes {
     const val HOME = "home"
     const val CONTACTS = "contacts"
-    const val LAN = "lan"
     const val CONVERSATION = "conversation/{conversationId}"
     fun conversation(id: String) = "conversation/$id"
 }
@@ -58,8 +56,8 @@ fun AryaApp(repo: AppRepository, network: NetworkRuntime, config: NetworkConfig)
                 }
             } else {
                 val navController = rememberNavController()
-                // LAN advertising and the listening socket now belong to AryaApplication, so they
-                // survive recomposition, rotation, and backgrounding instead of following the UI.
+                // The network runtime and its sockets belong to AryaApplication, so they survive
+                // recomposition, rotation and backgrounding instead of following the UI.
                 NavHost(navController = navController, startDestination = Routes.HOME) {
                     composable(Routes.HOME) {
                         HomeScreen(repo, identity!!, config, navController)
@@ -69,10 +67,7 @@ fun AryaApp(repo: AppRepository, network: NetworkRuntime, config: NetworkConfig)
                     }
                     composable(Routes.CONVERSATION) { entry ->
                         val id = entry.arguments?.getString("conversationId") ?: return@composable
-                        ConversationScreen(repo, id, navController)
-                    }
-                    composable(Routes.LAN) {
-                        LanScreen(repo, network, config, navController)
+                        ConversationScreen(repo, id, network, config, navController)
                     }
                 }
             }

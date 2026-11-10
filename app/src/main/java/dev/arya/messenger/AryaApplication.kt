@@ -2,14 +2,13 @@ package dev.arya.messenger
 
 import android.app.Application
 import dev.arya.messenger.data.AppRepository
-import dev.arya.messenger.data.AryaNsd
-import dev.arya.messenger.data.LanPeerTransport
+import dev.arya.messenger.data.IdentityEntity
 import dev.arya.messenger.data.NetworkConfig
 import dev.arya.messenger.data.PeerSessionProtocol
 import dev.arya.messenger.network.DefaultNetworkRuntime
 import dev.arya.messenger.network.DirectTcpTransport
-import dev.arya.messenger.network.LanTransportAdapter
 import dev.arya.messenger.network.NetworkRuntime
+import dev.arya.messenger.network.PeerEntryPort
 import dev.arya.messenger.network.RouteKind
 import dev.arya.messenger.network.relay.RelayNode
 import dev.arya.messenger.network.relay.RelayPeerTransport
@@ -21,18 +20,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Owns the single repository, the network runtime, and the optional relay node.
+ * Owns the single repository, the network runtime, the shared inbound port, and the optional relay
+ * node.
  *
- * Transport lifetime used to follow the Activity, so a rotation or a trip to the background tore
- * the listening socket down and NSD advertising was tied to composition. Both now live here, which
- * is also the prerequisite for running the same runtime from a foreground service in Phase 6.5.
+ * There is no local-network mode: the runtime only knows the direct internet route and the relay
+ * route. Inbound connections for both arrive on one port and are separated by their magic.
  */
 class AryaApplication : Application() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private var nsd: AryaNsd? = null
     private var relayNode: RelayNode? = null
+    private var entryPort: PeerEntryPort? = null
 
     lateinit var repository: AppRepository
         private set
@@ -48,26 +47,15 @@ class AryaApplication : Application() {
         repository = AppRepository(this)
         config = NetworkConfig(this)
 
-        val identityProvider: suspend () -> dev.arya.messenger.data.IdentityEntity? =
-            { repository.getLocalIdentity() }
+        val identityProvider: suspend () -> IdentityEntity? = { repository.getLocalIdentity() }
         val trustLookup: suspend (String) -> Boolean = { repository.isVerifiedPeer(it) }
 
-        val lan = LanPeerTransport(
+        val directProtocol = PeerSessionProtocol(
             localIdentity = identityProvider,
             isTrustedPeer = trustLookup,
             onMessage = { peerKey, peerName, body ->
-                repository.recordIncoming(peerKey, peerName, body, RouteKind.LAN_TCP)
+                repository.recordIncoming(peerKey, peerName, body, RouteKind.DIRECT_TCP)
             }
-        )
-
-        val direct = DirectTcpTransport(
-            protocol = PeerSessionProtocol(
-                localIdentity = identityProvider,
-                isTrustedPeer = trustLookup,
-                // The direct route has no inbound listener; it only ever initiates.
-                onMessage = { _, _, _ -> }
-            ),
-            localIdentity = identityProvider
         )
 
         val relay = RelayPeerTransport(
@@ -84,18 +72,22 @@ class AryaApplication : Application() {
 
         network = DefaultNetworkRuntime(
             listOf(
-                LanTransportAdapter(lan = lan, localIdentity = identityProvider),
-                direct,
+                DirectTcpTransport(directProtocol, identityProvider),
                 relay
             )
         )
 
+        // One port for everything we accept: direct sessions and relay pairings.
+        entryPort = PeerEntryPort(
+            listenPort = config.directListenPort(DirectTcpTransport.DEFAULT_PORT),
+            protocol = directProtocol,
+            relay = { relayNode }
+        )
+
         scope.launch {
+            // The identity is created during onboarding, so the runtime starts when it appears.
             val identity = repository.observe().filterNotNull().first()
             network.start(identity.displayName)
-            nsd = AryaNsd(this@AryaApplication).also {
-                it.register(identity.displayName, LanPeerTransport.PORT)
-            }
             applyNetworkConfig()
         }
     }
@@ -103,13 +95,14 @@ class AryaApplication : Application() {
     /** Applies relay-node settings after the user edits them; safe to call repeatedly. */
     fun applyNetworkConfig() {
         if (config.nodeModeEnabled) {
-            if (relayNode == null) relayNode = RelayNode(config.nodePort).also { it.start() }
+            if (relayNode == null) relayNode = RelayNode()
         } else {
             relayNode?.close()
             relayNode = null
         }
+        entryPort?.start()
     }
 
-    /** True when this device is currently accepting relay pairings, for the settings screen. */
+    /** True when this device is currently accepting relay pairings, for the settings surface. */
     fun isRelayNodeRunning(): Boolean = relayNode != null
 }

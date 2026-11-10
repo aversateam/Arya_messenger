@@ -2,6 +2,7 @@
 
 package dev.arya.messenger.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +52,7 @@ import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.ContactEntity
 import dev.arya.messenger.data.NetworkConfig
 import dev.arya.messenger.security.IdentityQr
+import dev.arya.messenger.ui.Routes
 import dev.arya.messenger.ui.repoScope
 import kotlinx.coroutines.launch
 
@@ -57,25 +61,12 @@ fun ContactsScreen(repo: AppRepository, config: NetworkConfig, navController: Na
     val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
     var status by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<ContactEntity?>(null) }
+    var inviteInput by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         val raw = result.contents
-        if (raw != null) {
-            scope.launch {
-                runCatching {
-                    val card = IdentityQr.decode(raw)
-                    repo.addContact(card.displayName, card.publicKey, card.fingerprint)
-                    // Reachability hints are optional and unauthenticated; the identity is not.
-                    config.setPeerHint(card.publicKey, card.endpoint, card.relay)
-                    card.relay?.let { relay ->
-                        if (relay !in config.relayEndpoints) {
-                            config.relayEndpoints = config.relayEndpoints + relay
-                        }
-                    }
-                }.onSuccess { status = "مخاطب با موفقیت به فهرست اضافه شد." }
-                 .onFailure { status = it.message ?: "QR معتبر نیست." }
-            }
-        }
+        if (raw != null) scope.launch { status = acceptInvite(repo, config, raw) }
     }
     Scaffold(
         topBar = {
@@ -92,7 +83,7 @@ fun ContactsScreen(repo: AppRepository, config: NetworkConfig, navController: Na
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "برای افزودن مخاطب، QR هویت عمومی او را اسکن کن. سپس اثر انگشت را از راهی مستقل (مثلاً تماس حضوری یا تماس صوتی) مقایسه کن.",
+                "برای شروع، فقط یک دعوت لازم است: QR را اسکن کن یا لینک دعوت را بچسبان. سپس اثر انگشت را از راهی مستقل (مثلاً تماس حضوری یا صوتی) مقایسه کن.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 lineHeight = 18.sp
@@ -102,7 +93,30 @@ fun ContactsScreen(repo: AppRepository, config: NetworkConfig, navController: Na
                 val options = ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                     .setPrompt("اسکن QR هویت آریا").setBeepEnabled(false).setOrientationLocked(false)
                 scanner.launch(options)
-            }, modifier = Modifier.fillMaxWidth()) { Text("اسکن QR و افزودن مخاطب") }
+            }, modifier = Modifier.fillMaxWidth()) { Text("اسکن QR") }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = inviteInput,
+                onValueChange = { inviteInput = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("یا لینک دعوت را بچسبان") },
+                minLines = 1,
+                maxLines = 3
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    val raw = inviteInput.trim()
+                    if (raw.isNotEmpty()) {
+                        scope.launch {
+                            status = acceptInvite(repo, config, raw)
+                            inviteInput = ""
+                        }
+                    }
+                },
+                enabled = inviteInput.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("افزودن با لینک") }
             if (status.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(status, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
@@ -121,7 +135,19 @@ fun ContactsScreen(repo: AppRepository, config: NetworkConfig, navController: Na
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(contacts, key = { it.id }) { contact ->
-                        ContactCard(contact, onVerify = { pending = contact })
+                        Box(Modifier.clickable {
+                            val key = contact.publicKey
+                            if (contact.verified && !key.isNullOrBlank()) {
+                                scope.launch {
+                                    val conversationId = repo.ensureDirectConversation(key, contact.displayName)
+                                    navController.navigate(Routes.conversation(conversationId))
+                                }
+                            } else {
+                                status = "برای شروع گفتگو ابتدا اثر انگشت این مخاطب را تأیید کن."
+                            }
+                        }) {
+                            ContactCard(contact, onVerify = { pending = contact })
+                        }
                     }
                 }
             }
@@ -177,3 +203,23 @@ private fun ContactCard(contact: ContactEntity, onVerify: () -> Unit) {
         }
     }
 }
+
+/**
+ * One invitation is the only way to connect: the QR, the copied link and a pasted message are the
+ * same payload, so there is no second channel or setting to get right.
+ */
+private suspend fun acceptInvite(repo: AppRepository, config: NetworkConfig, raw: String): String =
+    runCatching {
+        val card = IdentityQr.decodeInvite(raw)
+        repo.addContact(card.displayName, card.publicKey, card.fingerprint)
+        // Reachability hints are optional and unauthenticated; the identity is not.
+        config.setPeerHint(card.publicKey, card.endpoint, card.relay)
+        card.relay?.let { relay ->
+            if (relay !in config.relayEndpoints) {
+                config.relayEndpoints = config.relayEndpoints + relay
+            }
+        }
+    }.fold(
+        onSuccess = { "دعوت پذیرفته شد. حالا اثر انگشت را مقایسه و تأیید کن." },
+        onFailure = { it.message ?: "دعوت معتبر نیست." }
+    )
