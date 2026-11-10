@@ -4,18 +4,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.arya.messenger.data.AryaNsd
 import dev.arya.messenger.data.AppRepository
-import dev.arya.messenger.data.LanPeerTransport
+import dev.arya.messenger.data.NetworkConfig
+import dev.arya.messenger.network.NetworkRuntime
 import dev.arya.messenger.security.IdentityKeys
 import dev.arya.messenger.ui.screens.ContactsScreen
 import dev.arya.messenger.ui.screens.ConversationScreen
@@ -44,9 +42,8 @@ internal fun repoScope(block: suspend () -> Unit) {
 }
 
 @Composable
-fun AryaApp(repo: AppRepository, lan: LanPeerTransport) {
+fun AryaApp(repo: AppRepository, network: NetworkRuntime, config: NetworkConfig) {
     val identity by repo.observe().collectAsStateWithLifecycle(initialValue = null)
-    val context = LocalContext.current
 
     AryaTheme {
         // Surface paints the theme background AND provides the matching content color,
@@ -61,30 +58,21 @@ fun AryaApp(repo: AppRepository, lan: LanPeerTransport) {
                 }
             } else {
                 val navController = rememberNavController()
-                // Advertise this device on the LAN so other Arya installs discover it via NSD.
-                DisposableEffect(identity?.displayName) {
-                    val name = identity?.displayName
-                    if (name != null) {
-                        val nsd = AryaNsd(context)
-                        nsd.register(name, LanPeerTransport.PORT)
-                        onDispose { nsd.unregister() }
-                    } else {
-                        onDispose {}
-                    }
-                }
+                // LAN advertising and the listening socket now belong to AryaApplication, so they
+                // survive recomposition, rotation, and backgrounding instead of following the UI.
                 NavHost(navController = navController, startDestination = Routes.HOME) {
                     composable(Routes.HOME) {
-                        HomeScreen(repo, identity!!, navController)
+                        HomeScreen(repo, identity!!, config, navController)
                     }
                     composable(Routes.CONTACTS) {
-                        ContactsScreen(repo, navController)
+                        ContactsScreen(repo, config, navController)
                     }
                     composable(Routes.CONVERSATION) { entry ->
                         val id = entry.arguments?.getString("conversationId") ?: return@composable
                         ConversationScreen(repo, id, navController)
                     }
                     composable(Routes.LAN) {
-                        LanScreen(repo, identity!!, lan, navController)
+                        LanScreen(repo, network, config, navController)
                     }
                 }
             }

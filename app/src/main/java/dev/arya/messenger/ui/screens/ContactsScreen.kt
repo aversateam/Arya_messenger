@@ -47,12 +47,13 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.ContactEntity
+import dev.arya.messenger.data.NetworkConfig
 import dev.arya.messenger.security.IdentityQr
 import dev.arya.messenger.ui.repoScope
 import kotlinx.coroutines.launch
 
 @Composable
-fun ContactsScreen(repo: AppRepository, navController: NavHostController) {
+fun ContactsScreen(repo: AppRepository, config: NetworkConfig, navController: NavHostController) {
     val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
     var status by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<ContactEntity?>(null) }
@@ -64,6 +65,13 @@ fun ContactsScreen(repo: AppRepository, navController: NavHostController) {
                 runCatching {
                     val card = IdentityQr.decode(raw)
                     repo.addContact(card.displayName, card.publicKey, card.fingerprint)
+                    // Reachability hints are optional and unauthenticated; the identity is not.
+                    config.setPeerHint(card.publicKey, card.endpoint, card.relay)
+                    card.relay?.let { relay ->
+                        if (relay !in config.relayEndpoints) {
+                            config.relayEndpoints = config.relayEndpoints + relay
+                        }
+                    }
                 }.onSuccess { status = "مخاطب با موفقیت به فهرست اضافه شد." }
                  .onFailure { status = it.message ?: "QR معتبر نیست." }
             }

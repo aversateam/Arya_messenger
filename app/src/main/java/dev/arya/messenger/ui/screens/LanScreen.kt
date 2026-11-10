@@ -30,6 +30,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -52,31 +53,50 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.arya.messenger.AryaApplication
 import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.AryaNsd
-import dev.arya.messenger.data.IdentityEntity
+import dev.arya.messenger.data.ContactEntity
 import dev.arya.messenger.data.LanPeerTransport
+import dev.arya.messenger.data.NetworkConfig
+import dev.arya.messenger.network.DeliveryOutcome
+import dev.arya.messenger.network.FailureReason
+import dev.arya.messenger.network.LanTransportAdapter
+import dev.arya.messenger.network.NetworkRuntime
+import dev.arya.messenger.network.PeerAddress
+import dev.arya.messenger.network.PeerRef
+import dev.arya.messenger.network.RouteKind
+import dev.arya.messenger.network.relay.RelayProtocol
 import dev.arya.messenger.ui.repoScope
 import kotlinx.coroutines.launch
 
 @Composable
 fun LanScreen(
     repo: AppRepository,
-    identity: IdentityEntity,
-    lan: LanPeerTransport,
+    network: NetworkRuntime,
+    config: NetworkConfig,
     navController: NavHostController
 ) {
     val context = LocalContext.current
+    val app = context.applicationContext as? AryaApplication
+    val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
+    val verifiedContacts = contacts.filter { it.verified && !it.publicKey.isNullOrBlank() }
+    var recipient by remember { mutableStateOf<ContactEntity?>(null) }
+    var addressIsInternet by remember { mutableStateOf(false) }
+    var relayInput by remember { mutableStateOf(config.relayEndpoints.firstOrNull().orEmpty()) }
+    var endpointInput by remember { mutableStateOf(config.publicEndpoint) }
+    var nodeMode by remember { mutableStateOf(config.nodeModeEnabled) }
     var host by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
-    var selectedPeer by remember { mutableStateOf<AryaNsd.Peer?>(null) }
     var discovering by remember { mutableStateOf(false) }
     val peers = remember { mutableStateListOf<AryaNsd.Peer>() }
     var stopDiscovery by remember { mutableStateOf<(() -> Unit)?>(null) }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val addresses = remember(lan) { lan.localIpv4Addresses() }
+    val lan = remember(network) { network.transport(RouteKind.LAN_TCP) as? LanTransportAdapter }
+    val addresses = remember(lan) { lan?.localIpv4Addresses().orEmpty() }
 
     DisposableEffect(Unit) {
         onDispose { stopDiscovery?.invoke() }
@@ -89,7 +109,6 @@ fun LanScreen(
             discovering = false
         } else {
             peers.clear()
-            selectedPeer = null
             discovering = true
             stopDiscovery = AryaNsd(context).discover { list ->
                 peers.clear()
@@ -119,7 +138,7 @@ fun LanScreen(
                     Column(Modifier.padding(14.dp)) {
                         Text("هشدار امنیتی", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
                         Text(
-                            "ارسال پیام فقط پس از تأیید متقابل هویت مخاطب انجام می‌شود و محتوای پیام در نشست موقت رمزنگاری می‌شود. این نسخه هنوز فقط برای شبکه محلی است و برای ارتباط اینترنتی سراسری آماده نیست.",
+                            "ارسال پیام فقط پس از تأیید متقابل هویت مخاطب انجام می‌شود و محتوا در نشست رمزنگاری‌شده منتقل می‌شود. مسیرهای اینترنتی این نسخه هنوز روی دستگاه واقعی تأیید نشده‌اند و رله فقط نشست را جابه‌جا می‌کند؛ چیزی ذخیره نمی‌شود.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onTertiaryContainer
                         )
@@ -172,7 +191,6 @@ fun LanScreen(
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)
                             .clickable {
-                                selectedPeer = peer
                                 host = peer.host
                                 status = "گوشی «${peer.name}» انتخاب شد (${peer.host})"
                             },
@@ -192,14 +210,59 @@ fun LanScreen(
             }
             item { Spacer(Modifier.height(10.dp)) }
             item { HorizontalDivider(Modifier.padding(vertical = 10.dp)) }
-            item { Text("ارسال به گوشی دیگر", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
-            item { Spacer(Modifier.height(8.dp)) }
+            item { Text("گیرنده", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
+            item {
+                Text(
+                    "برای مسیر اینترنتی باید مخاطب تأییدشده انتخاب شود؛ رله با شناسه هویت جفت‌سازی می‌کند نه با IP.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (verifiedContacts.isEmpty()) {
+                item {
+                    Text(
+                        "مخاطب تأییدشده‌ای نداری. ابتدا با QR مخاطب را اضافه و اثر انگشت را تأیید کن.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            items(verifiedContacts, key = { it.id }) { contact ->
+                val selected = recipient?.id == contact.id
+                Card(
+                    Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                        .clickable { recipient = if (selected) null else contact },
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    )
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(contact.displayName, Modifier.weight(1f), fontSize = 13.sp)
+                        if (selected) {
+                            Text("انتخاب‌شده", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(10.dp)) }
+            item { Text("ارسال پیام", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("این آدرس روی اینترنت است", Modifier.weight(1f), fontSize = 12.sp)
+                    Switch(checked = addressIsInternet, onCheckedChange = { addressIsInternet = it })
+                }
+            }
             item {
                 OutlinedTextField(
                     value = host,
-                    onValueChange = { host = it; selectedPeer = null },
+                    onValueChange = { host = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("IP گوشی مقصد") },
+                    label = { Text(if (addressIsInternet) "آدرس مقصد (host:port، اختیاری)" else "IP گوشی مقصد (اختیاری)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri)
                 )
@@ -210,7 +273,7 @@ fun LanScreen(
                     value = message,
                     onValueChange = { message = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("متن آزمایشی") },
+                    label = { Text("متن پیام") },
                     minLines = 2,
                     maxLines = 4
                 )
@@ -219,24 +282,65 @@ fun LanScreen(
             item {
                 Button(
                     onClick = {
-                        val target = host.trim()
                         val body = message.trim()
-                        if (target.isBlank() || body.isBlank()) return@Button
+                        val peer = recipient
+                        val addressText = host.trim()
+                        if (body.isBlank()) return@Button
+                        if (peer == null && addressText.isBlank()) return@Button
+
+                        val addresses = buildList<PeerAddress> {
+                            if (addressText.isNotBlank()) {
+                                val parsed = RelayProtocol.parseEndpoint(addressText)
+                                    ?: RelayProtocol.parseEndpoint("$addressText:${LanPeerTransport.PORT}")
+                                if (parsed != null) {
+                                    add(
+                                        PeerAddress.Tcp(
+                                            parsed.host,
+                                            parsed.port,
+                                            if (addressIsInternet) PeerAddress.Tcp.Scope.INTERNET else PeerAddress.Tcp.Scope.LAN
+                                        )
+                                    )
+                                }
+                            }
+                            peer?.publicKey?.let { key ->
+                                val hint = config.peerHint(key)?.endpoint
+                                val parsedHint = hint?.let { RelayProtocol.parseEndpoint(it) }
+                                if (parsedHint != null) {
+                                    add(PeerAddress.Tcp(parsedHint.host, parsedHint.port, PeerAddress.Tcp.Scope.INTERNET))
+                                }
+                            }
+                        }
+
                         scope.launch {
                             status = "در حال اتصال…"
-                            val result = lan.send(target, identity.displayName, identity.publicKey, identity.keyAlias, body)
-                            result.onSuccess {
-                                val peerName = selectedPeer?.takeIf { it.host == target }?.name
-                                val conversationId = repo.getOrCreateLanConversation(target, peerName)
-                                repo.saveLanOutgoing(conversationId, body)
-                                status = "پیام رمزنگاری‌شده ارسال شد و تأیید تحویل دریافت شد. گفتگو ذخیره شد."
-                                message = ""
-                            }.onFailure { status = "ارسال ناموفق: ${it.message ?: "خطای شبکه"}" }
+                            val outcome = network.send(
+                                PeerRef(
+                                    publicKey = peer?.publicKey.orEmpty(),
+                                    displayName = peer?.displayName.orEmpty(),
+                                    addresses = addresses
+                                ),
+                                body.toByteArray(Charsets.UTF_8)
+                            )
+                            when (outcome) {
+                                is DeliveryOutcome.Delivered -> {
+                                    // The handshake proved the peer identity; the dialled IP never does.
+                                    repo.recordOutgoing(
+                                        outcome.authenticatedPeer.publicKey,
+                                        outcome.authenticatedPeer.displayName,
+                                        body,
+                                        outcome.route
+                                    )
+                                    status = "پیام رمزنگاری‌شده ارسال شد و تأیید تحویل دریافت شد. گفتگو ذخیره شد."
+                                    message = ""
+                                }
+                                is DeliveryOutcome.Failed -> status = "ارسال ناموفق: ${failureText(outcome.reason)}"
+                                is DeliveryOutcome.Queued -> status = "پیام برای ارسال بعدی در صف قرار گرفت."
+                            }
                         }
                     },
-                    enabled = host.isNotBlank() && message.isNotBlank(),
+                    enabled = message.isNotBlank() && (recipient != null || host.isNotBlank()),
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("ارسال پیام واقعی") }
+                ) { Text("ارسال پیام") }
             }
             item { Spacer(Modifier.height(10.dp)) }
             item {
@@ -263,9 +367,87 @@ fun LanScreen(
                 }
             }
             item { Spacer(Modifier.height(14.dp)) }
+            item { HorizontalDivider(Modifier.padding(vertical = 10.dp)) }
+            item { Text("مسیر اینترنتی", fontWeight = FontWeight.SemiBold, fontSize = 16.sp) }
             item {
                 Text(
-                    "هر دو گوشی باید روی یک شبکه Wi-Fi باشند و مخاطب مقابل قبلاً با QR و اثر انگشت تأیید شده باشد. این مسیر فقط آزمایش شبکه محلی است؛ ارتباط اینترنتی سراسری در فاز ۶ طراحی می‌شود. پورت TCP ${LanPeerTransport.PORT} استفاده می‌شود.",
+                    "آریا هیچ سرور مرکزی ندارد و هیچ هزینه‌ای لازم نیست. آدرس نود رله را خودت تعیین می‌کنی؛ خالی‌بودن آن یعنی فقط مسیر محلی و مستقیم.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            item {
+                OutlinedTextField(
+                    value = relayInput,
+                    onValueChange = { relayInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("آدرس نود رله (host:port)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri)
+                )
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = {
+                        if (RelayProtocol.parseEndpoint(relayInput) == null) {
+                            status = "آدرس رله معتبر نیست (نمونه: 1.2.3.4:45890)"
+                        } else {
+                            config.relayEndpoints = listOf(relayInput.trim())
+                            relayInput = relayInput.trim()
+                            status = "آدرس رله ذخیره شد."
+                        }
+                    }) { Text("ذخیره رله") }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = {
+                        config.relayEndpoints = emptyList()
+                        relayInput = ""
+                        status = "رله حذف شد."
+                    }) { Text("حذف رله") }
+                }
+            }
+            item {
+                OutlinedTextField(
+                    value = endpointInput,
+                    onValueChange = { endpointInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("آدرس عمومی این دستگاه (اختیاری)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri)
+                )
+            }
+            item {
+                Button(onClick = {
+                    val value = endpointInput.trim()
+                    if (value.isNotEmpty() && RelayProtocol.parseEndpoint(value) == null) {
+                        status = "آدرس عمومی معتبر نیست (نمونه: 203.0.113.5:45871)"
+                    } else {
+                        config.publicEndpoint = value
+                        status = "آدرس عمومی ذخیره شد."
+                    }
+                }) { Text("ذخیره آدرس عمومی") }
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("کمک به دیگران (نود رله)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "اگر آدرس عمومی داری، می‌توانی نشست دیگران را جابه‌جا کنی. محتوا رمزنگاری‌شده است و هیچ پیامی ذخیره نمی‌شود.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = nodeMode, onCheckedChange = {
+                        nodeMode = it
+                        config.nodeModeEnabled = it
+                        app?.applyNetworkConfig()
+                        status = if (it) "نود رله روشن شد (پورت ${config.nodePort})." else "نود رله خاموش شد."
+                    })
+                }
+            }
+            item { Spacer(Modifier.height(14.dp)) }
+            item {
+                Text(
+                    "مسیرها به ترتیب امتحان می‌شوند: شبکه محلی، اتصال مستقیم اینترنتی، سپس نود رله. رله فقط وقتی کار می‌کند که گیرنده هم به همان نود وصل باشد. اگر هیچ مسیری موفق نشود، پیام ارسال نمی‌شود و ارسال فوری گزارش می‌شود؛ صف آفلاین در فاز بعد اضافه می‌شود.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -273,4 +455,13 @@ fun LanScreen(
             item { Spacer(Modifier.height(24.dp)) }
         }
     }
+}
+
+private fun failureText(reason: FailureReason): String = when (reason) {
+    FailureReason.UNTRUSTED_PEER -> "مقصد در مخاطبان تأییدشده نیست؛ ابتدا QR و اثر انگشت را تأیید کن"
+    FailureReason.AUTH_FAILED -> "امضای هویت مقصد معتبر نیست"
+    FailureReason.TIMEOUT -> "زمان اتصال به پایان رسید"
+    FailureReason.TRANSPORT_UNAVAILABLE -> "هیچ مسیر ارتباطی فعال نیست"
+    FailureReason.PAYLOAD_INVALID -> "متن پیام معتبر نیست"
+    FailureReason.UNREACHABLE -> "مقصد در دسترس نیست"
 }

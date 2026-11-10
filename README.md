@@ -13,7 +13,7 @@
 
 [![Android](https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://developer.android.com/)
 [![Version](https://img.shields.io/badge/Version-0.4.0-blue?style=for-the-badge)](https://github.com/aversateam/Arya_messenger)
-[![Phase](https://img.shields.io/badge/Development-Phase%205%20(local%20groups)-orange?style=for-the-badge)](https://github.com/aversateam/Arya_messenger)
+[![Phase](https://img.shields.io/badge/Development-Phase%206.2%20(unverified)-orange?style=for-the-badge)](https://github.com/aversateam/Arya_messenger)
 [![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)](https://kotlinlang.org/)
 
 <br>
@@ -258,6 +258,21 @@ app/build/outputs/apk/debug/app-debug.apk
 - [ ] توزیع کلید و پیام‌رسانی گروهی راه دور (فاز ۶)
 
 > فاز ۴ هنوز کامل نیست. وضعیت دقیق، محدودیت‌های اعتبارسنجی و موارد باقی‌مانده در [`PHASE4_SECURITY_STATUS.md`](PHASE4_SECURITY_STATUS.md) ثبت شده است.
+
+### Phase 6 — Internet P2P & Relay
+
+- [x] لایه انتزاعی انتقال (Transport API) مستقل از UI و دیتابیس
+- [x] شناسه گفتگوی پایدار بر اساس کلید عمومی (رفع دو رشته‌شدن گفتگو برای یک مخاطب)
+- [x] جدول `peers` و مهاجرت Room از نسخه ۳ به ۴
+- [x] انتقال مالکیت سوکت و NSD از Activity به Application
+- [x] مسیر مستقیم TCP اینترنتی (بدون هیچ سرور یا هزینه)
+- [x] نود رله اختیاری روی دستگاه کاربر + مسیر رله برای عبور از NAT
+- [x] QR نسخه ۲ با آدرس مستقیم/رله اختیاری
+- [ ] تأیید کامپایل و تست دو دستگاه (بر عهده مالک پروژه)
+- [ ] سرویس Foreground و تحویل آفلاین (فاز ۶.۵)
+- [ ] رمزنگاری سرتاسری مستقل از لایه انتقال (فاز ۶.۶)
+
+> هشدار: مسیرهای اینترنتی این نسخه هنوز روی دستگاه واقعی اجرا و تأیید نشده‌اند. معماری و محدودیت‌ها در [`PHASE6_NETWORK_ARCHITECTURE.md`](PHASE6_NETWORK_ARCHITECTURE.md) و وضعیت دقیق در [`PHASE6_IMPLEMENTATION_STATUS.md`](PHASE6_IMPLEMENTATION_STATUS.md) ثبت شده است.
 
 ### Future Development
 

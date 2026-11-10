@@ -4,7 +4,29 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "identity")
-data class IdentityEntity(@PrimaryKey val id: Int = 1, val displayName: String, val publicKey: String, val keyAlias: String, val createdAt: Long = System.currentTimeMillis())
+data class IdentityEntity(
+    @PrimaryKey val id: Int = 1,
+    val displayName: String,
+    val publicKey: String,
+    val keyAlias: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    /** Base64 X.509 transport key bound to [publicKey]; null until the network layer provisions it. */
+    val transportPublicKey: String? = null,
+    /** Transport private key sealed by Android Keystore AEAD. Never stored in the clear. */
+    val transportKeySealed: ByteArray? = null
+)
+
+@Entity(tableName = "peers", indices = [Index("publicKey")])
+data class PeerEntity(
+    @PrimaryKey val peerId: String,
+    val publicKey: String,
+    val displayName: String,
+    val firstSeenAt: Long,
+    val lastSeenAt: Long,
+    val lastRoute: String,
+    /** Transport-layer peer id (libp2p PeerId); null until an internet transport is integrated. */
+    val transportPeerId: String? = null
+)
 
 @Entity(tableName = "contacts")
 data class ContactEntity(@PrimaryKey val id: String, val displayName: String, val publicKey: String? = null, val addedAt: Long = System.currentTimeMillis(), val fingerprint: String = "", val verified: Boolean = false)
@@ -69,6 +91,10 @@ interface MessengerDao {
     @Query("UPDATE contacts SET verified = 1 WHERE id = :id") suspend fun verifyContact(id: String)
     @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1") suspend fun getContact(id: String): ContactEntity?
     @Query("SELECT * FROM contacts WHERE publicKey = :publicKey AND verified = 1 LIMIT 1") suspend fun getVerifiedContactByPublicKey(publicKey: String): ContactEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertPeer(peer: PeerEntity)
+    @Query("SELECT * FROM peers WHERE peerId = :peerId LIMIT 1") suspend fun getPeer(peerId: String): PeerEntity?
+    @Query("SELECT * FROM peers WHERE publicKey = :publicKey LIMIT 1") suspend fun getPeerByPublicKey(publicKey: String): PeerEntity?
+    @Query("UPDATE identity SET transportPublicKey = :publicKey, transportKeySealed = :sealedKey WHERE id = 1") suspend fun saveTransportIdentity(publicKey: String, sealedKey: ByteArray)
     @Query("SELECT * FROM conversations ORDER BY lastActivity DESC") fun observeConversations(): Flow<List<ConversationEntity>>
     @Query("SELECT * FROM conversations WHERE id = :id LIMIT 1") suspend fun getConversation(id: String): ConversationEntity?
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertConversation(conversation: ConversationEntity)
@@ -97,7 +123,7 @@ interface MessengerDao {
     @Query("SELECT * FROM attachments WHERE conversationId = :id ORDER BY createdAt DESC") fun observeAttachments(id: String): Flow<List<AttachmentEntity>>
 }
 
-@Database(entities = [IdentityEntity::class, ContactEntity::class, ConversationEntity::class, MessageEntity::class, GroupEntity::class, GroupMemberEntity::class, GroupMembershipEntity::class, GroupKeyEntity::class, AttachmentEntity::class], version = 3, exportSchema = true)
+@Database(entities = [IdentityEntity::class, ContactEntity::class, PeerEntity::class, ConversationEntity::class, MessageEntity::class, GroupEntity::class, GroupMemberEntity::class, GroupMembershipEntity::class, GroupKeyEntity::class, AttachmentEntity::class], version = 4, exportSchema = true)
 abstract class MessengerDatabase : RoomDatabase() {
     abstract fun dao(): MessengerDao
 }

@@ -60,6 +60,7 @@ import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.ConversationEntity
 import dev.arya.messenger.data.ContactEntity
 import dev.arya.messenger.data.IdentityEntity
+import dev.arya.messenger.data.NetworkConfig
 import dev.arya.messenger.security.IdentityQr
 import dev.arya.messenger.ui.Routes
 import dev.arya.messenger.ui.components.Avatar
@@ -73,7 +74,7 @@ import java.util.Calendar
 import java.util.Date
 
 @Composable
-fun HomeScreen(repo: AppRepository, identity: IdentityEntity, navController: NavHostController) {
+fun HomeScreen(repo: AppRepository, identity: IdentityEntity, config: NetworkConfig, navController: NavHostController) {
     val context = LocalContext.current
     val conversations by repo.conversations().collectAsStateWithLifecycle(initialValue = emptyList())
     val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
@@ -173,7 +174,14 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, navController: Nav
         }
     )
     if (showIdentity) {
-        val qrPayload = remember(identity.publicKey, identity.displayName) { IdentityQr.encode(identity.displayName, identity.publicKey) }
+        val qrPayload = remember(identity.publicKey, identity.displayName, config.publicEndpoint) {
+            IdentityQr.encode(
+                identity.displayName,
+                identity.publicKey,
+                endpoint = config.publicEndpoint.ifBlank { null },
+                relay = config.relayEndpoints.firstOrNull()
+            )
+        }
         val bitmap = rememberQrBitmap(qrPayload)
         AlertDialog(
             onDismissRequest = { showIdentity = false },

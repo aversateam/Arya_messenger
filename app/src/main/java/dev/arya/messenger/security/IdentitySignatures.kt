@@ -26,6 +26,13 @@ object IdentitySignatures {
         }
     }.getOrDefault(false)
 
+    /** Structural check that a Base64 key is a P-256 public key usable as an Arya identity. */
+    fun isP256PublicKey(publicKeyBase64: String): Boolean = runCatching {
+        val encodedKey = Base64.getDecoder().decode(publicKeyBase64)
+        val publicKey = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(encodedKey)) as ECPublicKey
+        publicKey.params.isP256()
+    }.getOrDefault(false)
+
     private fun ECParameterSpec.isP256(): Boolean {
         val expected = AlgorithmParameters.getInstance("EC").run {
             init(ECGenParameterSpec("secp256r1"))

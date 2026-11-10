@@ -13,6 +13,8 @@ import dev.arya.messenger.security.GroupCrypto
 import dev.arya.messenger.security.GroupKeyVault
 import dev.arya.messenger.security.IdentityKeys
 import dev.arya.messenger.security.IdentityQr
+import dev.arya.messenger.security.PeerIds
+import dev.arya.messenger.network.RouteKind
 
 interface IdentityRepository {
     fun observe(): Flow<IdentityEntity?>
@@ -28,18 +30,6 @@ interface AttachmentRepository {
     suspend fun importFile(conversationId: String, uri: Uri): AttachmentEntity
     fun attachments(conversationId: String): Flow<List<AttachmentEntity>>
 }
-interface PeerTransport {
-    val description: String
-    suspend fun send(peerId: String, payload: ByteArray): Result<Unit>
-}
-interface PeerDiscovery { suspend fun discover(): List<String> }
-interface RelayTransport { suspend fun enqueue(recipient: String, ciphertext: ByteArray): Result<Unit> }
-
-class LocalOnlyTransport : PeerTransport {
-    override val description = "غیرفعال — فقط ذخیره‌سازی محلی"
-    override suspend fun send(peerId: String, payload: ByteArray) = Result.failure<Unit>(UnsupportedOperationException("Remote transport is not implemented"))
-}
-class LocalPeerDiscovery : PeerDiscovery { override suspend fun discover() = emptyList<String>() }
 
 private const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
 private const val MAX_GROUP_MEMBERS = 100
@@ -71,6 +61,15 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
                     database.execSQL("UPDATE groups SET ownerPublicKey = (SELECT publicKey FROM identity WHERE id = 1) WHERE ownerPublicKey = '' AND EXISTS (SELECT 1 FROM identity WHERE id = 1)")
                     database.execSQL("INSERT OR IGNORE INTO group_members(conversationId, memberId, displayName, publicKey, role, active) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', 1 FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
                     database.execSQL("INSERT OR IGNORE INTO group_membership_epochs(conversationId, memberId, displayName, publicKey, role, joinedAt, joinedEpoch, removedEpoch) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', g.createdAt, 1, NULL FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
+                }
+            },
+            object : androidx.room.migration.Migration(3, 4) {
+                override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    // Additive only: existing conversations, messages, contacts and groups are untouched.
+                    database.execSQL("CREATE TABLE IF NOT EXISTS peers (peerId TEXT NOT NULL, publicKey TEXT NOT NULL, displayName TEXT NOT NULL, firstSeenAt INTEGER NOT NULL, lastSeenAt INTEGER NOT NULL, lastRoute TEXT NOT NULL, transportPeerId TEXT, PRIMARY KEY(peerId))")
+                    database.execSQL("CREATE INDEX IF NOT EXISTS index_peers_publicKey ON peers(publicKey)")
+                    database.execSQL("ALTER TABLE identity ADD COLUMN transportPublicKey TEXT")
+                    database.execSQL("ALTER TABLE identity ADD COLUMN transportKeySealed BLOB")
                 }
             }
         ).build()
@@ -204,24 +203,69 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
         } finally { key.fill(0) }
     }
 
-    suspend fun getOrCreateLanConversation(host: String, peerName: String? = null): String {
-        val id = "lan-host-${host.trim().replace(Regex("[^A-Za-z0-9_-]"), "_")}"
-        if (dao.getConversation(id) == null) dao.insertConversation(ConversationEntity(id, peerName?.takeIf { it.isNotBlank() } ?: "گوشی $host"))
-        return id
-    }
-
-    suspend fun saveLanOutgoing(conversationId: String, text: String) {
-        dao.insertMessage(MessageEntity(UUID.randomUUID().toString(), conversationId, text, true, status = "SENT ON LAN"))
-        dao.touchConversation(conversationId, System.currentTimeMillis())
-    }
-
-    suspend fun receiveLanMessage(peerPublicKey: String, peerName: String, text: String) {
-        val conversationId = "lan-${peerPublicKey.hashCode().toUInt().toString(16)}"
+    /**
+     * One conversation per peer, keyed by the identity the handshake proved.
+     *
+     * The previous implementation derived the inbound id from `publicKey.hashCode()` and the
+     * outbound id from the dialled IP, so a two-way exchange produced two separate threads.
+     * Peer-scoped ids are direction-symmetric: both sides of the same peer land in one thread.
+     */
+    suspend fun recordIncoming(peerPublicKey: String, peerName: String, text: String, route: RouteKind): String =
         db.withTransaction {
-            if (dao.getConversation(conversationId) == null) dao.insertConversation(ConversationEntity(conversationId, peerName.ifBlank { "همتای شبکه محلی" }))
-            dao.insertMessage(MessageEntity(UUID.randomUUID().toString(), conversationId, text, false, status = "RECEIVED ON LAN"))
+            require(text.isNotBlank()) { "پیام خالی است" }
+            val conversationId = PeerIds.conversationId(peerPublicKey)
+            val title = upsertPeer(peerPublicKey, peerName, route)
+            if (dao.getConversation(conversationId) == null) {
+                dao.insertConversation(ConversationEntity(conversationId, title))
+            }
+            dao.insertMessage(
+                MessageEntity(UUID.randomUUID().toString(), conversationId, text, false, status = statusFor(route, outgoing = false))
+            )
             dao.touchConversation(conversationId, System.currentTimeMillis())
+            conversationId
         }
+
+    suspend fun recordOutgoing(peerPublicKey: String, peerName: String, text: String, route: RouteKind): String =
+        db.withTransaction {
+            require(text.isNotBlank()) { "پیام خالی است" }
+            val conversationId = PeerIds.conversationId(peerPublicKey)
+            val title = upsertPeer(peerPublicKey, peerName, route)
+            if (dao.getConversation(conversationId) == null) {
+                dao.insertConversation(ConversationEntity(conversationId, title))
+            }
+            dao.insertMessage(
+                MessageEntity(UUID.randomUUID().toString(), conversationId, text, true, status = statusFor(route, outgoing = true))
+            )
+            dao.touchConversation(conversationId, System.currentTimeMillis())
+            conversationId
+        }
+
+    suspend fun saveTransportIdentity(publicKey: String, sealedKey: ByteArray) =
+        dao.saveTransportIdentity(publicKey, sealedKey)
+
+    private suspend fun upsertPeer(peerPublicKey: String, peerName: String, route: RouteKind): String {
+        val peerId = PeerIds.peerId(peerPublicKey)
+        val existing = dao.getPeer(peerId)
+        val now = System.currentTimeMillis()
+        val title = peerName.trim().take(64).ifBlank { existing?.displayName ?: "همتای آریا" }
+        dao.upsertPeer(
+            PeerEntity(
+                peerId = peerId,
+                publicKey = peerPublicKey,
+                displayName = title,
+                firstSeenAt = existing?.firstSeenAt ?: now,
+                lastSeenAt = now,
+                lastRoute = route.name,
+                transportPeerId = existing?.transportPeerId
+            )
+        )
+        return title
+    }
+
+    private fun statusFor(route: RouteKind, outgoing: Boolean): String = when (route) {
+        RouteKind.LAN_TCP -> if (outgoing) "SENT ON LAN" else "RECEIVED ON LAN"
+        RouteKind.DIRECT_QUIC, RouteKind.DIRECT_TCP -> if (outgoing) "SENT · DIRECT" else "RECEIVED · DIRECT"
+        RouteKind.RELAY -> if (outgoing) "SENT · RELAY" else "RECEIVED · RELAY"
     }
 
     override suspend fun sendLocal(conversationId: String, text: String) = db.withTransaction {
