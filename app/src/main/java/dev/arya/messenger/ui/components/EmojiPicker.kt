@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Backspace
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -152,7 +152,7 @@ fun EmojiPicker(onPick: (String) -> Unit, onBackspace: () -> Unit, modifier: Mod
                 }
             }
             IconButton(onClick = onBackspace) {
-                Icon(Icons.Default.Backspace, contentDescription = "پاک کردن", tint = scheme.onSurfaceVariant)
+                Icon(Icons.AutoMirrored.Filled.Backspace, contentDescription = "پاک کردن", tint = scheme.onSurfaceVariant)
             }
         }
 

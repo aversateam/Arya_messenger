@@ -39,37 +39,37 @@ class AppRepository(context: Context) : IdentityRepository, MessageRepository, A
     private val db = Room.databaseBuilder(appContext, MessengerDatabase::class.java, "arya_messenger.db")
         .addMigrations(
             object : androidx.room.migration.Migration(1, 2) {
-                override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
-                    database.execSQL("ALTER TABLE contacts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")
-                    database.execSQL("ALTER TABLE contacts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE contacts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE contacts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
                 }
             },
             object : androidx.room.migration.Migration(2, 3) {
-                override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
-                    database.execSQL("ALTER TABLE groups ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
-                    database.execSQL("ALTER TABLE groups ADD COLUMN ownerPublicKey TEXT NOT NULL DEFAULT ''")
-                    database.execSQL("ALTER TABLE groups ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'")
-                    database.execSQL("ALTER TABLE group_members ADD COLUMN publicKey TEXT NOT NULL DEFAULT ''")
-                    database.execSQL("ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'MEMBER'")
-                    database.execSQL("ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
-                    database.execSQL("CREATE INDEX IF NOT EXISTS index_group_members_conversationId ON group_members(conversationId)")
-                    database.execSQL("CREATE TABLE IF NOT EXISTS group_membership_epochs (conversationId TEXT NOT NULL, memberId TEXT NOT NULL, displayName TEXT NOT NULL, publicKey TEXT NOT NULL, role TEXT NOT NULL, joinedAt INTEGER NOT NULL, joinedEpoch INTEGER NOT NULL, removedEpoch INTEGER, PRIMARY KEY(conversationId, memberId, joinedEpoch))")
-                    database.execSQL("CREATE INDEX IF NOT EXISTS index_group_membership_epochs_conversationId_joinedEpoch_removedEpoch ON group_membership_epochs(conversationId, joinedEpoch, removedEpoch)")
-                    database.execSQL("CREATE TABLE IF NOT EXISTS group_epoch_keys (conversationId TEXT NOT NULL, epoch INTEGER NOT NULL, sealedKey BLOB NOT NULL, fingerprint TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY(conversationId, epoch))")
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE groups ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1")
+                    db.execSQL("ALTER TABLE groups ADD COLUMN ownerPublicKey TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE groups ADD COLUMN state TEXT NOT NULL DEFAULT 'ACTIVE'")
+                    db.execSQL("ALTER TABLE group_members ADD COLUMN publicKey TEXT NOT NULL DEFAULT ''")
+                    db.execSQL("ALTER TABLE group_members ADD COLUMN role TEXT NOT NULL DEFAULT 'MEMBER'")
+                    db.execSQL("ALTER TABLE group_members ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS index_group_members_conversationId ON group_members(conversationId)")
+                    db.execSQL("CREATE TABLE IF NOT EXISTS group_membership_epochs (conversationId TEXT NOT NULL, memberId TEXT NOT NULL, displayName TEXT NOT NULL, publicKey TEXT NOT NULL, role TEXT NOT NULL, joinedAt INTEGER NOT NULL, joinedEpoch INTEGER NOT NULL, removedEpoch INTEGER, PRIMARY KEY(conversationId, memberId, joinedEpoch))")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS index_group_membership_epochs_conversationId_joinedEpoch_removedEpoch ON group_membership_epochs(conversationId, joinedEpoch, removedEpoch)")
+                    db.execSQL("CREATE TABLE IF NOT EXISTS group_epoch_keys (conversationId TEXT NOT NULL, epoch INTEGER NOT NULL, sealedKey BLOB NOT NULL, fingerprint TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY(conversationId, epoch))")
                     // Legacy local groups had display-name-only pseudo-members. Never trust them as cryptographic identities.
-                    database.execSQL("UPDATE group_members SET active = 0 WHERE publicKey = ''")
-                    database.execSQL("UPDATE groups SET ownerPublicKey = (SELECT publicKey FROM identity WHERE id = 1) WHERE ownerPublicKey = '' AND EXISTS (SELECT 1 FROM identity WHERE id = 1)")
-                    database.execSQL("INSERT OR IGNORE INTO group_members(conversationId, memberId, displayName, publicKey, role, active) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', 1 FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
-                    database.execSQL("INSERT OR IGNORE INTO group_membership_epochs(conversationId, memberId, displayName, publicKey, role, joinedAt, joinedEpoch, removedEpoch) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', g.createdAt, 1, NULL FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
+                    db.execSQL("UPDATE group_members SET active = 0 WHERE publicKey = ''")
+                    db.execSQL("UPDATE groups SET ownerPublicKey = (SELECT publicKey FROM identity WHERE id = 1) WHERE ownerPublicKey = '' AND EXISTS (SELECT 1 FROM identity WHERE id = 1)")
+                    db.execSQL("INSERT OR IGNORE INTO group_members(conversationId, memberId, displayName, publicKey, role, active) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', 1 FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
+                    db.execSQL("INSERT OR IGNORE INTO group_membership_epochs(conversationId, memberId, displayName, publicKey, role, joinedAt, joinedEpoch, removedEpoch) SELECT g.conversationId, 'owner:legacy', i.displayName, i.publicKey, 'OWNER', g.createdAt, 1, NULL FROM groups g JOIN identity i ON i.id = 1 WHERE i.publicKey != ''")
                 }
             },
             object : androidx.room.migration.Migration(3, 4) {
-                override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                     // Additive only: existing conversations, messages, contacts and groups are untouched.
-                    database.execSQL("CREATE TABLE IF NOT EXISTS peers (peerId TEXT NOT NULL, publicKey TEXT NOT NULL, displayName TEXT NOT NULL, firstSeenAt INTEGER NOT NULL, lastSeenAt INTEGER NOT NULL, lastRoute TEXT NOT NULL, transportPeerId TEXT, PRIMARY KEY(peerId))")
-                    database.execSQL("CREATE INDEX IF NOT EXISTS index_peers_publicKey ON peers(publicKey)")
-                    database.execSQL("ALTER TABLE identity ADD COLUMN transportPublicKey TEXT")
-                    database.execSQL("ALTER TABLE identity ADD COLUMN transportKeySealed BLOB")
+                    db.execSQL("CREATE TABLE IF NOT EXISTS peers (peerId TEXT NOT NULL, publicKey TEXT NOT NULL, displayName TEXT NOT NULL, firstSeenAt INTEGER NOT NULL, lastSeenAt INTEGER NOT NULL, lastRoute TEXT NOT NULL, transportPeerId TEXT, PRIMARY KEY(peerId))")
+                    db.execSQL("CREATE INDEX IF NOT EXISTS index_peers_publicKey ON peers(publicKey)")
+                    db.execSQL("ALTER TABLE identity ADD COLUMN transportPublicKey TEXT")
+                    db.execSQL("ALTER TABLE identity ADD COLUMN transportKeySealed BLOB")
                 }
             }
         ).build()
