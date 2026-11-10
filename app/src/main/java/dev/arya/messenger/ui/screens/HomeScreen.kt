@@ -1,5 +1,6 @@
 package dev.arya.messenger.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.ConversationEntity
+import dev.arya.messenger.data.ContactEntity
 import dev.arya.messenger.data.IdentityEntity
 import dev.arya.messenger.security.IdentityQr
 import dev.arya.messenger.ui.Routes
@@ -73,6 +76,7 @@ import java.util.Date
 fun HomeScreen(repo: AppRepository, identity: IdentityEntity, navController: NavHostController) {
     val context = LocalContext.current
     val conversations by repo.conversations().collectAsStateWithLifecycle(initialValue = emptyList())
+    val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
     val themeMode by AryaPrefs.theme.collectAsState(initial = AryaPrefs.themeMode(context))
     var search by remember { mutableStateOf("") }
     var showNew by remember { mutableStateOf(false) }
@@ -104,7 +108,7 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, navController: Nav
                 Column(Modifier.weight(1f)) {
                     Text("حالت محلی + آزمایش LAN", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Text(
-                        "اتصال مستقیم روی Wi-Fi مشترک؛ کشف خودکار NSD یا IP دستی — بدون رمزنگاری",
+                        "اتصال امن آزمایشی روی شبکه مشترک؛ هر دو دستگاه باید هویت یکدیگر را تأیید کرده باشند",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
                     )
@@ -157,9 +161,17 @@ fun HomeScreen(repo: AppRepository, identity: IdentityEntity, navController: Nav
     if (showNew) NameDialog("گفتگوی جدید", "نام مخاطب یا گفتگو", onDismiss = { showNew = false }) { title ->
         repoScope { navController.navigate(Routes.conversation(repo.createConversation(title))); showNew = false }
     }
-    if (showGroup) NameDialog("ساخت گروه محلی", "نام گروه", onDismiss = { showGroup = false }) { title ->
-        repoScope { navController.navigate(Routes.conversation(repo.createGroup(title, listOf(identity.displayName)))); showGroup = false }
-    }
+    if (showGroup) GroupCreateDialog(
+        contacts = contacts.filter { it.verified && !it.publicKey.isNullOrBlank() },
+        onDismiss = { showGroup = false },
+        onCreate = { title, ids ->
+            repoScope {
+                runCatching { repo.createGroup(title, ids) }
+                    .onSuccess { navController.navigate(Routes.conversation(it)); showGroup = false }
+                    .onFailure { Toast.makeText(context, it.message ?: "ساخت گروه ناموفق بود", Toast.LENGTH_LONG).show() }
+            }
+        }
+    )
     if (showIdentity) {
         val qrPayload = remember(identity.publicKey, identity.displayName) { IdentityQr.encode(identity.displayName, identity.publicKey) }
         val bitmap = rememberQrBitmap(qrPayload)
@@ -252,4 +264,46 @@ private fun formatListTime(ts: Long): String {
     val sameDay = today.get(Calendar.YEAR) == that.get(Calendar.YEAR) && today.get(Calendar.DAY_OF_YEAR) == that.get(Calendar.DAY_OF_YEAR)
     return if (sameDay) DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ts))
     else DateFormat.getDateInstance(DateFormat.SHORT).format(Date(ts))
+}
+
+
+@Composable
+private fun GroupCreateDialog(
+    contacts: List<ContactEntity>,
+    onDismiss: () -> Unit,
+    onCreate: (String, List<String>) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ساخت گروه رمزنگاری‌شده") },
+        text = {
+            Column {
+                OutlinedTextField(value = title, onValueChange = { title = it.take(64) }, label = { Text("نام گروه") }, singleLine = true)
+                Spacer(Modifier.height(10.dp))
+                Text("فقط مخاطبان تأییدشده قابل انتخاب‌اند", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (contacts.isEmpty()) Text("برای افزودن عضو، ابتدا QR مخاطب را اسکن و اثر انگشتش را تأیید کن.", fontSize = 12.sp)
+                else LazyColumn(Modifier.height(220.dp)) {
+                    items(contacts, key = { it.id }) { contact ->
+                        Row(Modifier.fillMaxWidth().clickable {
+                            selected = if (contact.id in selected) selected - contact.id else selected + contact.id
+                        }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = contact.id in selected, onCheckedChange = { checked ->
+                                selected = if (checked) selected + contact.id else selected - contact.id
+                            })
+                            Column {
+                                Text(contact.displayName, fontWeight = FontWeight.Medium)
+                                Text("هویت تأییدشده", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { if (title.isNotBlank()) onCreate(title.trim(), selected.toList()) }, enabled = title.isNotBlank()) { Text("ساخت گروه") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("لغو") } }
+    )
 }

@@ -24,10 +24,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SentimentSatisfied
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -62,6 +66,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import dev.arya.messenger.data.AppRepository
 import dev.arya.messenger.data.AttachmentEntity
+import dev.arya.messenger.data.ContactEntity
+import dev.arya.messenger.data.GroupMemberEntity
 import dev.arya.messenger.data.MessageEntity
 import dev.arya.messenger.ui.components.EmojiText
 import dev.arya.messenger.ui.components.EmojiPicker
@@ -126,7 +132,12 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
     val context = LocalContext.current
     val messages by repo.messages(id).collectAsStateWithLifecycle(initialValue = emptyList())
     val attachments by repo.attachments(id).collectAsStateWithLifecycle(initialValue = emptyList())
+    val members by repo.groupMembers(id).collectAsStateWithLifecycle(initialValue = emptyList())
+    val contacts by repo.contacts().collectAsStateWithLifecycle(initialValue = emptyList())
     var title by remember { mutableStateOf("گفتگو") }
+    var isGroup by remember { mutableStateOf(false) }
+    var isGroupOwner by remember { mutableStateOf(false) }
+    var showGroupMembers by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf(TextFieldValue("")) }
     var showPicker by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -139,6 +150,8 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
     }
     LaunchedEffect(id) {
         title = repo.conversationTitle(id) ?: "گفتگو"
+        isGroup = repo.isGroupConversation(id)
+        isGroupOwner = repo.isGroupOwner(id)
         listState.scrollToItem(0)
     }
     LaunchedEffect(messages.size, attachments.size) {
@@ -155,7 +168,7 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                     Column {
                         Text(title, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                         Text(
-                            if (isLan) "آزمایش LAN • بدون رمزنگاری" else "ذخیره‌سازی محلی • بدون اتصال",
+                            if (isLan) "آزمایش LAN امن • یک پیام در هر نشست" else if (isGroup) "گروه رمزنگاری‌شده • فقط محلی" else "ذخیره‌سازی محلی • بدون اتصال",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -164,6 +177,11 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "بازگشت")
+                    }
+                },
+                actions = {
+                    if (isGroup) IconButton(onClick = { showGroupMembers = true }) {
+                        Icon(Icons.Default.Group, contentDescription = "اعضای گروه")
                     }
                 }
             )
@@ -202,8 +220,9 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                             )
                         )
                         IconButton(onClick = {
-                            picker.launch(arrayOf("image/*", "application/pdf", "text/*", "application/*"))
-                        }) { Icon(Icons.Default.AttachFile, contentDescription = "پیوست") }
+                            if (isGroup) Toast.makeText(context, "پیوست گروهی هنوز آماده نیست", Toast.LENGTH_SHORT).show()
+                            else picker.launch(arrayOf("image/*", "application/pdf", "text/*", "application/*"))
+                        }, enabled = !isGroup) { Icon(Icons.Default.AttachFile, contentDescription = "پیوست") }
                         val text = input.text.trim()
                         if (text.isNotEmpty()) {
                             IconButton(
@@ -267,6 +286,17 @@ fun ConversationScreen(repo: AppRepository, id: String, navController: NavHostCo
                 }
             }
         }
+    }
+
+    if (showGroupMembers) {
+        GroupMembersDialog(
+            members = members,
+            contacts = contacts.filter { it.verified && !it.publicKey.isNullOrBlank() },
+            canManage = isGroupOwner,
+            onDismiss = { showGroupMembers = false },
+            onAdd = { ids -> repoScope { runCatching { repo.addGroupMembers(id, ids) }.onFailure { Toast.makeText(context, it.message ?: "خطا در افزودن عضو", Toast.LENGTH_LONG).show() } } },
+            onRemove = { member -> repoScope { runCatching { repo.removeGroupMember(id, member.memberId) }.onFailure { Toast.makeText(context, it.message ?: "خطا در حذف عضو", Toast.LENGTH_LONG).show() } } }
+        )
     }
 
     if (showPicker) {
@@ -349,4 +379,58 @@ private fun FileBubble(file: AttachmentEntity) {
             }
         }
     }
+}
+
+
+@Composable
+private fun GroupMembersDialog(
+    members: List<GroupMemberEntity>,
+    contacts: List<ContactEntity>,
+    canManage: Boolean,
+    onDismiss: () -> Unit,
+    onAdd: (List<String>) -> Unit,
+    onRemove: (GroupMemberEntity) -> Unit
+) {
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    val activeIds = members.map { it.memberId }.toSet()
+    val available = contacts.filter { it.id !in activeIds }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("اعضای گروه · ${members.size}") },
+        text = {
+            Column {
+                members.forEach { member ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(member.displayName)
+                            Text(if (member.role == "OWNER") "سازنده گروه" else "عضو", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (canManage && member.role != "OWNER") TextButton(onClick = { onRemove(member) }) { Text("حذف") }
+                    }
+                }
+                if (canManage) {
+                    androidx.compose.material3.HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    Text("افزودن مخاطب تأییدشده", fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                    if (available.isEmpty()) Text("مخاطب تأییدشده جدیدی وجود ندارد.", fontSize = 12.sp)
+                    else androidx.compose.foundation.lazy.LazyColumn(Modifier.height(170.dp)) {
+                        items(available, key = { it.id }) { contact ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = contact.id in selected, onCheckedChange = { checked ->
+                                    selected = if (checked) selected + contact.id else selected - contact.id
+                                })
+                                Text(contact.displayName)
+                            }
+                        }
+                    }
+                } else {
+                    Text("فقط سازنده گروه می‌تواند اعضا را تغییر دهد.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("مدیریت اعضا و کلیدها فعلاً محلی است؛ توزیع کلید به دستگاه‌های دیگر در فاز ۶ انجام می‌شود.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            if (canManage && selected.isNotEmpty()) TextButton(onClick = { onAdd(selected.toList()); selected = emptySet() }) { Text("افزودن") }
+            TextButton(onClick = onDismiss) { Text("بستن") }
+        }
+    )
 }

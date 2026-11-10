@@ -17,9 +17,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         EmojiImages.init(this)
         repository = AppRepository(this)
-        lan = LanPeerTransport { peerKey, peerName, body ->
-            repoScope { repository.receiveLanMessage(peerKey, peerName, body) }
-        }
+        lan = LanPeerTransport(
+            localIdentity = { repository.getLocalIdentity() },
+            isTrustedPeer = { publicKey -> repository.isVerifiedPeer(publicKey) },
+            onMessage = { peerKey, peerName, body -> repository.receiveLanMessage(peerKey, peerName, body) }
+        )
         lan.start()
         setContent { AryaApp(repository, lan) }
     }

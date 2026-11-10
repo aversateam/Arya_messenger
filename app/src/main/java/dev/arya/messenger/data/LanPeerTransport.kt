@@ -1,7 +1,12 @@
 package dev.arya.messenger.data
 
+import dev.arya.messenger.security.EphemeralSessionCrypto
+import dev.arya.messenger.security.IdentityKeys
+import dev.arya.messenger.security.IdentitySignatures
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.Inet4Address
@@ -9,14 +14,29 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
-import java.util.Base64
+import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Manual-IP, same-Wi-Fi TCP transport. This first transport is intentionally plaintext. */
+/** Authenticated, encrypted one-message TCP session for trusted one-to-one LAN peers. */
 class LanPeerTransport(
-    private val onMessage: suspend (peerPublicKey: String, peerName: String, body: String) -> Unit
+    private val localIdentity: suspend () -> IdentityEntity?,
+    private val isTrustedPeer: suspend (publicKey: String) -> Boolean,
+    private val onMessage: suspend (peerPublicKey: String, peerName: String, body: String) -> Unit,
+    private val listenPort: Int = PORT,
+    private val signIdentity: (alias: String, message: ByteArray) -> ByteArray = IdentityKeys::sign
 ) : AutoCloseable {
-    companion object { const val PORT = 45871; private const val MAGIC = 0x4D534831; private const val MAX_TEXT = 16_000 }
+    companion object {
+        const val PORT = 45871
+        private const val MAGIC = 0x41525934
+        private const val VERSION = 1
+        private const val MAX_FRAME = 20_000
+        private const val MAX_NAME = 64
+        private const val MAX_KEY = 2048
+        private const val MAX_BODY = 16_000
+        private const val NONCE_SIZE = 32
+    }
+
     private val running = AtomicBoolean(false)
     @Volatile private var server: ServerSocket? = null
 
@@ -24,56 +44,154 @@ class LanPeerTransport(
         if (!running.compareAndSet(false, true)) return
         Thread {
             try {
-                ServerSocket(PORT).use { socket ->
-                    server = socket
+                ServerSocket(listenPort).use { listener ->
+                    server = listener
                     while (running.get()) {
-                        val client = try { socket.accept() } catch (e: SocketException) { break }
-                        Thread { handle(client) }.start()
+                        val client = try { listener.accept() } catch (_: SocketException) { break }
+                        Thread { handle(client) }.apply { name = "arya-secure-peer"; isDaemon = true }.start()
                     }
                 }
             } catch (_: Exception) {
                 running.set(false)
             }
-        }.apply { name = "arya-lan-listener"; isDaemon = true }.start()
+        }.apply { name = "arya-secure-listener"; isDaemon = true }.start()
     }
 
     private fun handle(socket: Socket) {
-        socket.use { client ->
-            client.soTimeout = 12_000
-            val input = DataInputStream(client.getInputStream())
-            val output = DataOutputStream(client.getOutputStream())
+        socket.use { peer ->
+            peer.soTimeout = 12_000
             try {
-                require(input.readInt() == MAGIC) { "پروتکل شبکه محلی آریا پشتیبانی نمی‌شود" }
-                val peerName = input.readUTF().take(64)
-                val publicKey = input.readUTF().take(2048)
-                val body = input.readUTF().take(MAX_TEXT)
-                require(body.isNotBlank())
-                kotlinx.coroutines.runBlocking { onMessage(publicKey, peerName, body) }
-                output.writeBoolean(true)
-                output.flush()
+                runBlocking {
+                    val identity = localIdentity() ?: error("هویت این دستگاه آماده نیست")
+                    val input = DataInputStream(peer.getInputStream())
+                    val output = DataOutputStream(peer.getOutputStream())
+                    require(input.readInt() == MAGIC && input.readInt() == VERSION) { "نسخه پروتکل پشتیبانی نمی‌شود" }
+                    val initiatorName = input.readUTF().bounded(MAX_NAME)
+                    val initiatorKey = input.readUTF().bounded(MAX_KEY)
+                    val initiatorEphemeral = readBytes(input, 512)
+                    val initiatorNonce = readBytes(input, NONCE_SIZE)
+                    require(initiatorNonce.size == NONCE_SIZE) { "Nonce نامعتبر است" }
+                    require(isTrustedPeer(initiatorKey)) { "هویت فرستنده در مخاطبان تأییدشده نیست" }
+
+                    val responderEphemeral = EphemeralSessionCrypto.newEphemeralKeyPair()
+                    val responderNonce = ByteArray(NONCE_SIZE).also(SecureRandom()::nextBytes)
+                    val transcript = transcript(
+                        initiatorName, initiatorKey, initiatorEphemeral, initiatorNonce,
+                        identity.displayName, identity.publicKey, responderEphemeral.public.encoded, responderNonce
+                    )
+                    val responderSignature = signIdentity(identity.keyAlias, transcript)
+                    output.writeUTF(identity.displayName.take(MAX_NAME))
+                    output.writeUTF(identity.publicKey.take(MAX_KEY))
+                    writeBytes(output, responderEphemeral.public.encoded)
+                    writeBytes(output, responderNonce)
+                    writeBytes(output, responderSignature)
+                    output.flush()
+
+                    val initiatorSignature = readBytes(input, 256)
+                    require(IdentitySignatures.verify(initiatorKey, transcript, initiatorSignature)) {
+                        "امضای احراز هویت فرستنده معتبر نیست"
+                    }
+                    val keys = EphemeralSessionCrypto.deriveSessionKeys(
+                        responderEphemeral.private, initiatorEphemeral, transcript, isInitiator = false
+                    )
+                    val records = EphemeralSessionCrypto.RecordCipher(keys.sendKey, keys.receiveKey)
+                    keys.sendKey.fill(0); keys.receiveKey.fill(0)
+                    try {
+                        require(String(readRecord(input, records), StandardCharsets.UTF_8) == "ARYA-FINISH-v1") {
+                            "تأیید نهایی نشست نامعتبر است"
+                        }
+                        writeRecord(output, records, "ARYA-READY-v1".toByteArray(StandardCharsets.UTF_8))
+                        val body = String(readRecord(input, records), StandardCharsets.UTF_8)
+                        require(body.isNotBlank() && body.toByteArray().size <= MAX_BODY) { "پیام نامعتبر است" }
+                        onMessage(initiatorKey, initiatorName, body)
+                        writeRecord(output, records, "ARYA-DELIVERED-v1".toByteArray(StandardCharsets.UTF_8))
+                    } finally { records.destroy() }
+                }
             } catch (_: Exception) {
-                runCatching { output.writeBoolean(false); output.flush() }
+                // Fail closed: no plaintext fallback and no unauthenticated delivery.
             }
         }
     }
 
-    suspend fun send(host: String, displayName: String, publicKey: String, body: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun send(host: String, displayName: String, publicKey: String, keyAlias: String, body: String, port: Int = PORT): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            require(body.isNotBlank() && body.length <= MAX_TEXT) { "پیام باید بین ۱ تا ۱۶۰۰۰ نویسه باشد" }
+            require(body.isNotBlank() && body.toByteArray().size <= MAX_BODY) { "پیام باید بین ۱ تا ۱۶۰۰۰ بایت باشد" }
+            val identity = IdentityEntity(displayName = displayName, publicKey = publicKey, keyAlias = keyAlias)
             Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress(host.trim(), PORT), 5_000)
-                socket.soTimeout = 8_000
-                val output = DataOutputStream(socket.getOutputStream())
+                socket.connect(java.net.InetSocketAddress(host.trim(), port), 5_000)
+                socket.soTimeout = 12_000
                 val input = DataInputStream(socket.getInputStream())
-                output.writeInt(MAGIC)
-                output.writeUTF(displayName.take(64))
-                output.writeUTF(publicKey.take(2048))
-                output.writeUTF(body)
-                output.flush()
-                check(input.readBoolean()) { "گیرنده پیام را نپذیرفت" }
+                val output = DataOutputStream(socket.getOutputStream())
+                val ephemeral = EphemeralSessionCrypto.newEphemeralKeyPair()
+                val nonce = ByteArray(NONCE_SIZE).also(SecureRandom()::nextBytes)
+                output.writeInt(MAGIC); output.writeInt(VERSION)
+                output.writeUTF(identity.displayName.take(MAX_NAME)); output.writeUTF(identity.publicKey.take(MAX_KEY))
+                writeBytes(output, ephemeral.public.encoded); writeBytes(output, nonce); output.flush()
+
+                val peerName = input.readUTF().bounded(MAX_NAME)
+                val peerKey = input.readUTF().bounded(MAX_KEY)
+                val peerEphemeral = readBytes(input, 512)
+                val peerNonce = readBytes(input, NONCE_SIZE)
+                require(peerNonce.size == NONCE_SIZE) { "Nonce مقصد نامعتبر است" }
+                val peerSignature = readBytes(input, 256)
+                require(isTrustedPeer(peerKey)) { "مقصد در مخاطبان تأییدشده نیست؛ ابتدا QR و اثر انگشت را تأیید کن" }
+                val transcript = transcript(
+                    identity.displayName, identity.publicKey, ephemeral.public.encoded, nonce,
+                    peerName, peerKey, peerEphemeral, peerNonce
+                )
+                require(IdentitySignatures.verify(peerKey, transcript, peerSignature)) { "امضای هویت مقصد معتبر نیست" }
+                writeBytes(output, signIdentity(identity.keyAlias, transcript)); output.flush()
+
+                val keys = EphemeralSessionCrypto.deriveSessionKeys(ephemeral.private, peerEphemeral, transcript, isInitiator = true)
+                val records = EphemeralSessionCrypto.RecordCipher(keys.sendKey, keys.receiveKey)
+                keys.sendKey.fill(0); keys.receiveKey.fill(0)
+                try {
+                    writeRecord(output, records, "ARYA-FINISH-v1".toByteArray(StandardCharsets.UTF_8))
+                    require(String(readRecord(input, records), StandardCharsets.UTF_8) == "ARYA-READY-v1") { "همتا نشست امن را تأیید نکرد" }
+                    writeRecord(output, records, body.toByteArray(StandardCharsets.UTF_8))
+                    require(String(readRecord(input, records), StandardCharsets.UTF_8) == "ARYA-DELIVERED-v1") { "تأیید تحویل پیام دریافت نشد" }
+                } finally { records.destroy() }
             }
         }
     }
+
+    private fun transcript(
+        iName: String, iKey: String, iEphemeral: ByteArray, iNonce: ByteArray,
+        rName: String, rKey: String, rEphemeral: ByteArray, rNonce: ByteArray
+    ): ByteArray = ByteArrayOutputStream().use { bytes ->
+        DataOutputStream(bytes).use { out ->
+            out.writeUTF("ARYA-AUTHENTICATED-HANDSHAKE")
+            out.writeInt(VERSION)
+            out.writeUTF("initiator"); out.writeUTF(iName); out.writeUTF(iKey); writeBytes(out, iEphemeral); writeBytes(out, iNonce)
+            out.writeUTF("responder"); out.writeUTF(rName); out.writeUTF(rKey); writeBytes(out, rEphemeral); writeBytes(out, rNonce)
+        }
+        bytes.toByteArray()
+    }
+
+    private fun readBytes(input: DataInputStream, max: Int): ByteArray {
+        val size = input.readInt()
+        require(size in 1..max) { "اندازه داده پروتکل نامعتبر است" }
+        return ByteArray(size).also(input::readFully)
+    }
+
+    private fun writeBytes(output: DataOutputStream, bytes: ByteArray) {
+        require(bytes.isNotEmpty() && bytes.size <= MAX_FRAME)
+        output.writeInt(bytes.size); output.write(bytes)
+    }
+
+    private fun writeRecord(output: DataOutputStream, cipher: EphemeralSessionCrypto.RecordCipher, data: ByteArray) {
+        val encrypted = cipher.encrypt(data)
+        require(encrypted.size <= MAX_FRAME)
+        output.writeInt(encrypted.size); output.write(encrypted); output.flush()
+    }
+
+    private fun readRecord(input: DataInputStream, cipher: EphemeralSessionCrypto.RecordCipher): ByteArray {
+        val size = input.readInt()
+        require(size in 36..MAX_FRAME) { "بسته رمزنگاری‌شده نامعتبر است" }
+        return cipher.decrypt(ByteArray(size).also(input::readFully))
+    }
+
+    private fun String.bounded(max: Int): String = also { require(length in 1..max) { "فیلد متنی نامعتبر است" } }
 
     override fun close() {
         running.set(false)

@@ -119,7 +119,7 @@ fun LanScreen(
                     Column(Modifier.padding(14.dp)) {
                         Text("هشدار امنیتی", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
                         Text(
-                            "این نسخه پیام را به‌صورت متن ساده روی Wi-Fi می‌فرستد. فقط روی شبکه مورد اعتماد آزمایش کن؛ هنوز رمزنگاری یا احراز هویت همتا وجود ندارد.",
+                            "ارسال پیام فقط پس از تأیید متقابل هویت مخاطب انجام می‌شود و محتوای پیام در نشست موقت رمزنگاری می‌شود. این نسخه هنوز فقط برای شبکه محلی است و برای ارتباط اینترنتی سراسری آماده نیست.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onTertiaryContainer
                         )
@@ -224,12 +224,12 @@ fun LanScreen(
                         if (target.isBlank() || body.isBlank()) return@Button
                         scope.launch {
                             status = "در حال اتصال…"
-                            val result = lan.send(target, identity.displayName, identity.publicKey, body)
+                            val result = lan.send(target, identity.displayName, identity.publicKey, identity.keyAlias, body)
                             result.onSuccess {
                                 val peerName = selectedPeer?.takeIf { it.host == target }?.name
                                 val conversationId = repo.getOrCreateLanConversation(target, peerName)
                                 repo.saveLanOutgoing(conversationId, body)
-                                status = "پیام از طریق TCP ارسال شد و ACK دریافت شد. گفتگو ذخیره شد."
+                                status = "پیام رمزنگاری‌شده ارسال شد و تأیید تحویل دریافت شد. گفتگو ذخیره شد."
                                 message = ""
                             }.onFailure { status = "ارسال ناموفق: ${it.message ?: "خطای شبکه"}" }
                         }
@@ -265,7 +265,7 @@ fun LanScreen(
             item { Spacer(Modifier.height(14.dp)) }
             item {
                 Text(
-                    "هر دو گوشی باید روی یک شبکه Wi-Fi باشند و پیام‌رسان آریا روی هر دو باز باشد. کشف NSD روی همان شبکه محلی انجام می‌شود و اتصال دستی با IP هم همچنان کار می‌کند. پورت TCP ${LanPeerTransport.PORT} استفاده می‌شود.",
+                    "هر دو گوشی باید روی یک شبکه Wi-Fi باشند و مخاطب مقابل قبلاً با QR و اثر انگشت تأیید شده باشد. این مسیر فقط آزمایش شبکه محلی است؛ ارتباط اینترنتی سراسری در فاز ۶ طراحی می‌شود. پورت TCP ${LanPeerTransport.PORT} استفاده می‌شود.",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
